@@ -1,0 +1,112 @@
+# Tater Memory Plus Core
+
+**Memory Plus Core** (`memory_plus`) is an enhanced replacement for Tater's stock Memory Core.
+It is a fork of the stock core ([`Tater_Shop/cores/memory_core.py`](https://github.com/TaterTotterson/Tater_Shop))
+that keeps the same architecture — background extraction from conversation history, People
+identity integration, episodic memory, profile cards — and upgrades four things:
+
+1. **Smarter retrieval without embeddings.** A pure-Python lexical scorer (BM25 + character
+   trigrams + a built-in concept map + intent/time-of-day priors + quality prior, combined with
+   pseudo-relevance feedback and MMR diversity) decides which facts and episodes to inject for
+   the current turn. No vector database, no network, ~ms-scale scoring.
+2. **Correctable facts.** Stock's confidence ratchet can make a stale fact nearly impossible to
+   replace. Memory+ implements a `pending_alt` rule: a differing value replaces the stored one
+   on correction, after two sightings of the same alternative, when confidence is close, or
+   when the fact is old — keeping the previous value in a `previous` history (max 3).
+3. **First-run backfill & import.** New scopes extract a bounded history window on first
+   encounter, and existing stock Memory Core data (`mem:user:*`, `mem:room:*`, identity docs)
+   can be imported read-only and idempotently from the Management tab.
+4. **Safer injection & maintenance UI.** An injection sanitizer drops secret-bearing and
+   instruction-like values before they reach the model, sensitive categories are gated by
+   default, LLM-proposed nightly consolidation runs behind all-or-nothing validation with
+   rotating backups, and a **Recall Tester** in the WebUI shows exactly what would be injected
+   and why (per-signal score breakdown).
+
+## Install
+
+1. Add the raw manifest URL of this repository to Tater under **Cores → Repositories**:
+   `https://raw.githubusercontent.com/<user>/<repo>/main/core_manifest.json`
+2. Install **Memory Plus Core** from the Shop list and configure it under its settings category
+   (**Memory Plus Core Settings**).
+3. Start the core. Facts appear in the **Memory+** tab as conversation history is processed.
+
+> ⚠️ Tater extensions run **in-process and unsandboxed** inside your Tater installation. They
+> have access to Tater's Redis, filesystem, and network. Only install code from repositories
+> you trust. Memory+ stores all data in Tater's own Redis under the `memory_plus_core:*`
+> namespace and speaks to your configured LLM provider; it does not send data anywhere else.
+
+## Coexisting with the stock Memory Core (A/B testing)
+
+Memory+ can run **alongside** the stock core without disturbing it:
+
+- **Shadow mode** (default path for evaluation): leave the stock core running and set
+  **Inject Memory Context OFF** in Memory+ settings. Memory+ still extracts, stores, and
+  consolidates, but injects nothing and does not claim `memory_add`/`memory_remove`, so the
+  stock core remains the injected memory and tool owner.
+- Use the **Recall Tester** tab against real queries to compare with what the stock core
+  injects; tune `custom_synonyms` (one group per line, comma-separated words) to cover your
+  vocabulary.
+- When the Overview tab shows the stock core running **and** injection ON, a conflict warning
+  appears there and is logged (once per hour) — both cores would inject and fight over tools.
+- **Cutover:** disable the stock Memory Core, set **Inject Memory Context ON**. Use
+  **Import From Stock Memory Core** in Maintenance first if you want your existing facts.
+
+### Manual test checklist
+
+1. Install; shadow mode; let extraction + backfill run for a day.
+2. Recall Tester with real queries; compare injected block against stock.
+3. Verify injected block stays within the `context_max_chars` limit (shown in tester output).
+4. Cutover; exercise `memory_add` / `memory_remove` / `memory_recall` by voice and WebUI.
+5. State a fact, contradict it later; confirm the new value wins and the old value is kept in
+   `previous` (visible after a forget/edit cycle or in the facts table).
+6. Stop/restart the core — shutdown is cooperative and completes within seconds.
+7. Uninstall with "Delete data" — only `memory_plus_core:*` keys and the settings hash are
+   removed; shared Tater label keys (`tater:room_label:*`, `tater:user_label:*`) are preserved.
+
+## Retrieval quality (no-embeddings evaluation)
+
+The scorer is evaluated against a fixture person (62 facts + 40 episodes, 84 labeled queries)
+with a stock-style baseline (token overlap + confidence/recency). Run
+`python3 -m pytest tests/test_evaluation.py -q -s` to reproduce the current table:
+
+| group | n | Recall@5 | Recall@10 | MRR |
+|---|---|---|---|---|
+| episode | 10 | 0.800 | 0.900 | 0.594 |
+| exact | 15 | 1.000 | 1.000 | 0.900 |
+| morphological | 10 | 0.900 | 0.900 | 0.717 |
+| paraphrase | 19 | 0.842 | 1.000 | 0.636 |
+| short_utterance | 10 | 0.900 | 1.000 | 0.671 |
+| typo | 10 | 0.900 | 0.900 | 0.783 |
+| negative | 10 | 10/10 inject nothing beyond anchors | — | — |
+
+(Baseline stock-style scorer for the same groups: episode 0.00, exact 0.33, morphological 0.10,
+paraphrase 0.21, short_utterance 0.10, typo 0.00 Recall@5.)
+
+Benchmark on this fixture: index build ≤ 250 ms and ranking ≤ 75 ms per query for 500 facts +
+200 episodes (asserted in CI).
+
+## Known limitations
+
+- **Lexical retrieval is not semantic search.** Queries that share no words *and* no concept
+  with the stored text will not match. Mitigations built in: pseudo-relevance feedback,
+  character-trigram fuzziness, the built-in concept map (~90 groups), user-editable
+  `custom_synonyms`, and the `memory_recall` tool (the planner can rephrase and retry).
+- The concept map is English-oriented and hand-curated; rare hobbies/vocabulary should be
+  added via `custom_synonyms`.
+- Episodes and profile cards depend on the extraction LLM following the schema; malformed
+  output is dropped, never guessed.
+- Memory+ is intentionally a fork of the stock schema, so `Import From Stock Memory Core`
+  only copies user/room facts and identity docs — it does not migrate stock retrieval caches.
+
+## Development
+
+```bash
+python3 -m py_compile cores/memory_plus_core.py
+python3 -m pytest tests/ -q          # 79 tests incl. the evaluation harness
+python3 reference/Tater_Shop/tools/generate_core_manifest.py --root . --name "Tater Memory Plus"
+python3 reference/Tater_Shop/tools/validate_package.py --root . --kind core
+```
+
+The manifest (`core_manifest.json`) is generated — do not hand-edit it. Regenerate it after
+every source change and bump `__version__` in `cores/memory_plus_core.py` whenever users
+should receive an update.
