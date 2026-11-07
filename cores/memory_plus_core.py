@@ -3908,7 +3908,7 @@ W_QUALITY = 0.15
 _FALLBACK_CANDIDATE_MIN = 6
 
 # Absolute minimum score for a non-anchor fact to be injected (spec 6.7)
-MIN_SCORE = 0.12
+MIN_SCORE = 0.22
 
 # Anchors: identity & stable context considered first (spec 6.7)
 _ANCHOR_KEYS = frozenset(
@@ -3962,7 +3962,7 @@ _SUFFIXES_RULES = (
 
 # Concept map: token -> concept group (spec 6.4). Editable module literal.
 CONCEPT_GROUPS = {
-    "food": ("food", "foods", "meal", "meals", "eat", "eating", "dish", "cuisine", "snack", "snacks", "lunch", "breakfast", "hungry", "supper", "thai", "curry", "ramen", "sushi", "pho", "noodles", "pasta", "italian", "indian", "mexican", "chinese", "japanese", "korean", "tacos", "pizza", "burger", "burgers", "stir_fry", "spicy", "favorite_food", "favorite_foods"),
+    "food": ("food", "foods", "meal", "meals", "eat", "eating", "dish", "cuisine", "snack", "snacks", "lunch", "breakfast", "hungry", "supper", "thai", "curry", "ramen", "sushi", "pho", "noodles", "pasta", "italian", "indian", "mexican", "chinese", "japanese", "korean", "tacos", "pizza", "burger", "burgers", "stir_fry", "spicy", "favorite_food", "favorite_foods", "dining", "dine", "dinner_ideas"),
     "cooking": ("cook", "cooking", "recipe", "recipes", "bake", "baking", "grill", "dinner", "kitchen", "meal_prep", "make_food", "chef"),
     "diet": ("vegetarian", "vegan", "diet", "dietary", "allergy", "allergies", "gluten", "lactose", "keto", "pescatarian", "intolerant"),
     "drink": ("drink", "drinks", "drinking", "beverage", "juice", "soda", "water", "wine", "beer", "cocktail", "alcohol", "tea", "chai"),
@@ -3972,7 +3972,7 @@ CONCEPT_GROUPS = {
     "video": ("movie", "movies", "film", "show", "shows", "series", "episode", "documentary", "subtitle", "watch", "watching", "cinema", "tv"),
     "streaming": ("netflix", "stream", "streaming", "youtube", "prime_video", "disney", "hulu", "cast", "casting"),
     "pets": ("pet", "pets", "dog", "dogs", "cat", "cats", "puppy", "kitten", "bird", "fish", "walk_the_dog", "dog_food"),
-    "family": ("family", "wife", "husband", "spouse", "partner", "son", "daughter", "kid", "kids", "child", "children", "mom", "mother", "dad", "father", "sister", "brother", "grandma", "grandpa", "grandmother", "grandfather", "aunt", "uncle", "nephew", "niece", "cousin", "inlaws", "in_laws"),
+    "family": ("family", "birthday", "birthdays", "anniversary", "anniversaries", "wife", "husband", "spouse", "partner", "son", "daughter", "kid", "kids", "child", "children", "mom", "mother", "dad", "father", "sister", "brother", "grandma", "grandpa", "grandmother", "grandfather", "aunt", "uncle", "nephew", "niece", "cousin", "inlaws", "in_laws"),
     "friends": ("friend", "friends", "buddy", "pal", "mate", "roommate", "neighbor", "neighbours", "neighborhood"),
     "work": ("work", "job", "jobs", "occupation", "occupations", "engineer", "developer", "career", "startup", "robotics", "office", "boss", "manager", "client", "meeting", "meetings", "coworker", "colleague", "salary", "paycheck", "career", "workday", "standup"),
     "schedule": ("schedule", "calendar", "appointment", "appointments", "meeting_time", "availability", "availability_time", "busy", "free_time", "reschedule", "morning_standup"),
@@ -3999,7 +3999,7 @@ CONCEPT_GROUPS = {
     "shopping": ("shopping", "shop", "buy", "bought", "purchase", "order", "ordered", "amazon", "store", "mall", "boutique", "cart"),
     "money": ("money", "budget", "bill", "bills", "expense", "expenses", "pay", "payment", "invoice", "bank", "banking", "finance", "loan", "mortgage", "tax", "taxes", "refund", "receipt"),
     "groceries": ("groceries", "grocery", "grocery_list", "market", "supermarket", "produce", "veggies", "vegetables", "fruits"),
-    "hobbies": ("hobby", "hobbies", "craft", "crafts", "painting", "drawing", "photography", "knitting", "woodworking", "pottery", "leathercraft", "calligraphy"),
+    "hobbies": ("hobby", "hobbies", "project", "projects", "diy", "craft", "crafts", "painting", "drawing", "photography", "knitting", "woodworking", "pottery", "leathercraft", "calligraphy"),
     "games": ("game", "games", "gaming", "gamer", "videogame", "video_games", "console", "playstation", "playdate", "xbox", "nintendo", "switch", "steam", "arcade", "board_game", "board_games", "puzzle", "puzzles"),
     "reading": ("book", "books", "read", "reading", "novel", "novels", "audiobook", "audiobooks", "kindle", "library", "author", "comics", "manga", "poetry"),
     "projects": ("project", "projects", "side_project", "prototype", "build", "building", "diy", "workbench", "workshop", "blueprint"),
@@ -4050,7 +4050,7 @@ CONCEPT_GROUPS = {
     "notifications": ("notification", "notifications", "alert", "alerts", "ping", "chime", "ding", "buzzer"),
     "privacy": ("privacy", "private", "confidential", "secret", "discreet", "dont_share", "keep_private", "personal_data", "tracking"),
     "memories": ("memory", "remember", "recall", "forget", "memories", "know_about_me", "past_conversations", "history_with_me"),
-    "preferences_general": ("favorite", "favorites", "prefer", "preference", "preferences", "like", "likes", "love", "loves", "hate", "hates", "dislike", "dislikes", "interests", "hobby_pref", "enjoys"),
+    "preferences_general": ("favorite", "favorites", "prefer", "preference", "preferences", "like", "likes", "love", "loves", "hate", "hates", "dislike", "dislikes", "disliked", "hated", "hating", "interests", "hobby_pref", "enjoys"),
     "assistant_behavior": ("automate", "automation", "shortcut", "shortcuts", "routine_automation", "trigger", "triggered", "if_this_then_that", "workflow", "script_automation", "macro", "timer", "countdown", "stopwatch"),
 }
 
@@ -4079,6 +4079,16 @@ _CONCEPT_TOKEN_MAP: Dict[str, frozenset] = {
     token: frozenset(ids) for token, ids in _CONCEPT_TOKEN_MAP_RAW.items()
 }
 del _CONCEPT_TOKEN_MAP_RAW
+
+# Knowledge/lookup queries are usually not about the user: non-anchor docs need
+# lexical support from the user's own words, not just concept expansions.
+_KNOWLEDGE_QUERY_RE = re.compile(
+    r"\btranslate\b|\bconvert\b|\bcapital of\b|\bhow many\b|\bwho won\b"
+    r"|\bwhat does\b[^?]*\bmean\b|\bdefine\b|\bcalculate\b|\bpopulation\b"
+    r"|\bwhat time is it\b|\bwhat's the time\b|\bhow much is\b"
+)
+_DIGIT_RE = re.compile(r"^\d+$")
+_DIGIT_WEIGHT = 0.25
 
 # Intent category boosts (spec 6.5 signal 5)
 _INTENT_RULES = (
@@ -4121,7 +4131,15 @@ def is_stopword(token: str) -> bool:
 
 
 def content_tokens(text: Any) -> List[str]:
-    return [t for t in tokenize(text) if not is_stopword(t)]
+    tokens = []
+    for token in tokenize(text):
+        if is_stopword(token):
+            continue
+        if len(token) == 1 and not token.isdigit():
+            # "don't" -> "don" + "t"; bare letters are never meaningful content.
+            continue
+        tokens.append(token)
+    return tokens
 
 
 def stem(token: str) -> str:
@@ -4166,13 +4184,15 @@ def trigram_dice(a: str, b: str) -> float:
 
 
 class RetrieverDoc:
-    __slots__ = ("id", "kind", "key", "text", "category", "confidence", "mentions", "ts", "source", "tokens", "stems", "concepts", "grams")
+    __slots__ = ("id", "kind", "key", "raw_key", "text", "raw_text", "category", "confidence", "mentions", "ts", "source", "tokens", "stems", "concepts", "grams")
 
     def __init__(self, id: str, kind: str, key: str, text: str, category: str = "",
                  confidence: float = 0.5, mentions: int = 1, ts: float = 0.0, source: str = "stated"):
         self.id = id
         self.kind = kind
         self.key = key or ""
+        self.raw_key = str(key or "")
+        self.raw_text = str(text or "")
         self.text = _normalize_retriever_text(text)
         self.category = _normalize_retriever_text(category).replace(" ", "_")
         self.confidence = max(0.0, min(1.0, float(confidence or 0.0)))
@@ -4223,10 +4243,13 @@ class RetrieverIndex:
         term_df: Dict[str, int] = {}
         for _idx, doc in enumerate(docs):
             counts: Dict[str, int] = {}
-            for token in doc.stems:
-                counts[token] = counts.get(token, 0) + 1
-            length = sum(counts.values()) or 1
-            self.doc_len.append(length)
+            for raw_token, stem_token in zip(doc.tokens, doc.stems):
+                counts[stem_token] = counts.get(stem_token, 0) + 1
+                if raw_token != stem_token:
+                    # Index both raw and stemmed forms (spec 6.3); stem lookup wins first.
+                    counts[raw_token] = counts.get(raw_token, 0) + 1
+            stem_length = sum(counts.get(token, 0) for token in doc.stems) or 1
+            self.doc_len.append(stem_length)
             for token, count in counts.items():
                 self.postings.setdefault(token, []).append((_idx, count))
                 term_df[token] = term_df.get(token, 0) + 1
@@ -4269,7 +4292,7 @@ class LexicalRetriever:
 
         # Short/ambiguous utterances (spec 6.6): fold in context tokens.
         extra_tokens: List[str] = []
-        if len(q_tokens) < 3:
+        if len(q_tokens) < 3 and context_text.strip():
             extra_tokens.extend(content_tokens(context_text))
             hour_bucket = "morning" if 5 <= hour < 12 else ("afternoon" if 12 <= hour < 17 else ("evening" if 17 <= hour < 22 else "night" if 22 <= hour <= 23 else "night"))
             extra_tokens.append(hour_bucket)
@@ -4278,6 +4301,7 @@ class LexicalRetriever:
                 extra_tokens.extend(content_tokens(room.replace("_", " ")))
         weighted_query: List[Tuple[str, float]] = [(t, 1.0) for t in q_tokens]
         weighted_query += [(t, 0.7) for t in extra_tokens]
+        original_terms = set(q_tokens) | set(extra_tokens)
 
         # Concept expansion at 0.5 (spec 6.5).
         q_text = " ".join(q_tokens)
@@ -4290,8 +4314,21 @@ class LexicalRetriever:
                         seen_terms.add(word)
                         weighted_query.append((word, 0.5 * weight))
 
-        scored = self._score(index, weighted_query, now, room, q_tokens=q_tokens, q_text=q_text, q_grams=q_grams)
-        scored = self._pseudo_relevance_feedback(index, weighted_query, scored, now, room)
+        support_terms = {token for token, w in weighted_query if w >= 0.6}  # user words incl. context
+        original_terms = original_terms  # set above
+        knowledge_query = bool(
+            _KNOWLEDGE_QUERY_RE.search(q_text)
+            or _KNOWLEDGE_QUERY_RE.search(_normalize_retriever_text(text))
+        )
+        scored = self._score(
+            index, weighted_query, now, room,
+            q_tokens=q_tokens, q_text=q_text, q_grams=q_grams,
+            support_terms=support_terms, knowledge_query=knowledge_query,
+        )
+        scored = self._pseudo_relevance_feedback(
+            index, weighted_query, scored, now, room,
+            knowledge_query=knowledge_query, support_terms=support_terms,
+        )
         scored.sort(key=lambda item: item["score"], reverse=True)
         return scored[: max(1, int(k))]
 
@@ -4306,6 +4343,8 @@ class LexicalRetriever:
         q_tokens: Optional[List[str]] = None,
         q_text: Optional[str] = None,
         q_grams: Optional[set] = None,
+        support_terms: Optional[set] = None,
+        knowledge_query: bool = False,
     ) -> List[Dict[str, Any]]:
         if not index.doc_count:
             return []
@@ -4325,26 +4364,45 @@ class LexicalRetriever:
             df = len(index.postings.get(term, ()))
             idf[term] = math.log(1.0 + (index.doc_count - df + 0.5) / (df + 0.5))
 
+        original_terms = {token for token, w in weighted_query if w >= 0.99}
+        if support_terms is None:
+            support_terms = {token for token, w in weighted_query if w >= 0.6}  # user words incl. context
         partial: Dict[int, float] = {}
         matched_terms: Dict[int, set] = {}
+        ceiling = 0.0  # absolute per-query ceiling: sum of idf*weight over corpus-present terms
         for term, weight in weighted_query:
+            if _DIGIT_RE.match(term):
+                weight *= _DIGIT_WEIGHT
             idf_term = idf.get(term)
             if idf_term is None or idf_term <= 0:
                 continue
-            for idx, tf in index.postings.get(term, ()):
+            stem_term = stem(term)
+            posting = index.postings.get(stem_term) or index.postings.get(term) or ()
+            posting_term = stem_term if index.postings.get(stem_term) else term
+            # Ceiling spans ALL query terms (present or not) so that a lone match
+            # on a short-corpus term cannot saturate the normalized score.
+            ceiling += min(2.2, idf_term) * min(1.0, weight)
+            for idx, tf in posting:
                 length = index.doc_len[idx] or 1
                 tf_norm = (tf * (weight)) * (_BM25_K1 + 1.0)
                 denom = tf + _BM25_K1 * (1.0 - _BM25_B + _BM25_B * (length / avg_len))
                 partial[idx] = partial.get(idx, 0.0) + idf_term * tf_norm / denom
-                matched_terms.setdefault(idx, set()).add(term)
+                matched_terms.setdefault(idx, set()).add(posting_term)
 
-        max_bm25 = max(partial.values()) if partial else 1.0
+        bm25_denom = ceiling if ceiling > 0 else 1.0
 
         candidates: List[int] = list(partial.keys())
         # Fallback (spec 6.10): paraphrase-like queries with no lexical overlap
         # must still score via concept/trigram/intent, so widen to all docs.
         if len(candidates) < _FALLBACK_CANDIDATE_MIN:
             candidates = list(range(index.doc_count))
+        if knowledge_query:
+            candidates = [
+                idx
+                for idx in candidates
+                if index.docs[idx].kind != "fact"
+                or len((matched_terms.get(idx) or set()) & original_terms) >= 2
+            ]
 
         query_concepts: Dict[str, float] = {}
         query_families: Dict[str, float] = {}
@@ -4361,7 +4419,7 @@ class LexicalRetriever:
         for idx in candidates:
             doc = index.docs[idx]
             bm25 = partial.get(idx, 0.0)
-            bm25_norm = (bm25 / max_bm25) if max_bm25 > 0 else 0.0
+            bm25_norm = min(1.0, bm25 / bm25_denom) if bm25 > 0 else 0.0
 
             grams_doc = doc.grams
             shared = len(q_grams & grams_doc)
@@ -4381,6 +4439,10 @@ class LexicalRetriever:
             if room and room in doc.text:
                 quality = min(1.0, quality + 0.05)
 
+            # Direct-support rule: without lexical support from the user's own words
+            # (or strong fuzzy/concept agreement), expansion/PRF matches may not lift
+            # a doc far above quality-only. Keeps unrelated turns quiet (spec 6.7/6.10).
+            direct_support = bool((matched_terms.get(idx) or set()) & support_terms) or tri >= 0.15 or concept_norm >= 0.15
             score = (
                 W_BM25 * bm25_norm
                 + W_TRIGRAM * tri
@@ -4388,6 +4450,11 @@ class LexicalRetriever:
                 + W_INTENT * intent
                 + W_QUALITY * quality
             )
+            if not direct_support:
+                score = min(
+                    0.02 + W_QUALITY * quality + W_INTENT * intent + W_TRIGRAM * max(0.0, tri),
+                    score,
+                )
             results.append(
                 {
                     "doc": doc,
@@ -4404,7 +4471,16 @@ class LexicalRetriever:
             )
         return results
 
-    def _pseudo_relevance_feedback(self, index: RetrieverIndex, weighted_query: List[Tuple[str, float]], scored: List[Dict[str, Any]], now: float, room: str) -> List[Dict[str, Any]]:
+    def _pseudo_relevance_feedback(
+        self,
+        index: RetrieverIndex,
+        weighted_query: List[Tuple[str, float]],
+        scored: List[Dict[str, Any]],
+        now: float,
+        room: str,
+        support_terms: Optional[set] = None,
+        knowledge_query: bool = False,
+    ) -> List[Dict[str, Any]]:
         """Spec 6.5 signal 4: expand with top TF-IDF terms of top-3 first-pass docs."""
         if not scored:
             return scored
@@ -4427,15 +4503,18 @@ class LexicalRetriever:
         if not expansion:
             return scored
         merged = list(weighted_query) + expansion
-        return self._score(index, merged, now, room)
+        return self._score(
+            index, merged, now, room,
+            support_terms=support_terms, knowledge_query=knowledge_query,
+        )
 
 
 def idf_concept(index: RetrieverIndex, concept: str) -> float:
-    """IDF-ish weight for a concept based on how many docs carry it (precomputed)."""
+    """Discriminating IDF for a concept: common concepts contribute ~0, rare ~1."""
     df = index.concept_df.get(concept, 0)
     if df == 0 or index.doc_count == 0:
         return 1.0
-    return min(1.0, math.log(1.0 + index.doc_count / (df + 1.0)))
+    return max(0.0, min(1.0, math.log((index.doc_count - df + 0.5) / (df + 0.5))))
 
 
 def _intent_boost(query_text: str, doc: RetrieverDoc) -> float:

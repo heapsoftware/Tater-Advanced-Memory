@@ -95,7 +95,9 @@ def test_exact_match_ranks_first(core, index, ):
     retriever, idx = index
     results = retriever.rank({"text": "what are my favorite foods", "now": NOW}, idx, k=5)
     assert results[0]["doc"].key == "favorite_foods"
-    assert results[0]["score"] > 0.5
+    # Healthy margin over the runner-up (absolute score scale changed when the
+    # BM25 normalization switched from max-relative to a per-query ceiling).
+    assert results[0]["score"] > 1.7 * results[1]["score"]
 
 
 def test_morphological_match(core, index):

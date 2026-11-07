@@ -1,0 +1,1406 @@
+{
+  "person": "Maya",
+  "facts": [
+    {
+      "key": "name",
+      "value": "Maya",
+      "category": "demographic_information",
+      "confidence": 0.95,
+      "mentions": 12
+    },
+    {
+      "key": "occupation",
+      "value": "pediatric nurse at Riverside Children's Hospital",
+      "category": "demographic_information",
+      "confidence": 0.95,
+      "mentions": 9
+    },
+    {
+      "key": "wife_name",
+      "value": "Priya",
+      "category": "family_background",
+      "confidence": 0.95,
+      "mentions": 15
+    },
+    {
+      "key": "son_name",
+      "value": "Theo",
+      "category": "family_background",
+      "confidence": 0.95,
+      "mentions": 11
+    },
+    {
+      "key": "daughter_name",
+      "value": "Lena",
+      "category": "family_background",
+      "confidence": 0.9,
+      "mentions": 8
+    },
+    {
+      "key": "pet_names",
+      "value": "miso the orange tabby and buckwheat the beagle",
+      "category": "family_background",
+      "confidence": 0.9,
+      "mentions": 10
+    },
+    {
+      "key": "favorite_foods",
+      "value": "pad thai, mushroom ramen, grilled peaches",
+      "category": "preferences",
+      "confidence": 0.9,
+      "mentions": 7
+    },
+    {
+      "key": "disliked_foods",
+      "value": "cilantro and raisins",
+      "category": "preferences",
+      "confidence": 0.85,
+      "mentions": 5
+    },
+    {
+      "key": "dietary_preferences",
+      "value": "pescatarian, no red meat",
+      "category": "preferences",
+      "confidence": 0.9,
+      "mentions": 6
+    },
+    {
+      "key": "coffee_preference",
+      "value": "oat milk cortado, no sugar",
+      "category": "preferences",
+      "confidence": 0.85,
+      "mentions": 6
+    },
+    {
+      "key": "tea_preference",
+      "value": "jasmine green tea in the evening",
+      "category": "preferences",
+      "confidence": 0.8,
+      "mentions": 4
+    },
+    {
+      "key": "music_interests",
+      "value": "soul, Motown, and Erykah Badu",
+      "category": "interests",
+      "confidence": 0.85,
+      "mentions": 5
+    },
+    {
+      "key": "podcast_interests",
+      "value": "heavy metal and true crime podcasts",
+      "category": "interests",
+      "confidence": 0.8,
+      "mentions": 3
+    },
+    {
+      "key": "favorite_movies",
+      "value": "Studio Ghibli films and ocean documentaries",
+      "category": "interests",
+      "confidence": 0.85,
+      "mentions": 4
+    },
+    {
+      "key": "reading_interests",
+      "value": "historical fiction novels, currently reading Pachinko",
+      "category": "interests",
+      "confidence": 0.8,
+      "mentions": 3
+    },
+    {
+      "key": "home_temperatures",
+      "value": "master bedroom 68 at night, living room 71 daytime",
+      "category": "home_automation",
+      "confidence": 0.9,
+      "mentions": 8
+    },
+    {
+      "key": "great_room_lighting",
+      "value": "warm white 30 percent brightness after sunset",
+      "category": "home_automation",
+      "confidence": 0.85,
+      "mentions": 6
+    },
+    {
+      "key": "bedroom_temperature",
+      "value": "68 degrees",
+      "category": "home_automation",
+      "confidence": 0.9,
+      "mentions": 5
+    },
+    {
+      "key": "thermostat_schedule",
+      "value": "cooling kicks in at 9 pm automatically",
+      "category": "home_automation",
+      "confidence": 0.8,
+      "mentions": 4
+    },
+    {
+      "key": "garage_door_habit",
+      "value": "always checks the garage door is closed before bed",
+      "category": "behavioral_patterns",
+      "confidence": 0.8,
+      "mentions": 4
+    },
+    {
+      "key": "wake_time",
+      "value": "5:45 am on workdays",
+      "category": "behavioral_patterns",
+      "confidence": 0.9,
+      "mentions": 7
+    },
+    {
+      "key": "bedtime",
+      "value": "usually lights out by 10",
+      "category": "behavioral_patterns",
+      "confidence": 0.85,
+      "mentions": 5
+    },
+    {
+      "key": "morning_routine",
+      "value": "coffee, stretches, then wakes the kids",
+      "category": "behavioral_patterns",
+      "confidence": 0.8,
+      "mentions": 4
+    },
+    {
+      "key": "work_schedule",
+      "value": "three 12-hour shifts a week, usually Monday Wednesday Friday",
+      "category": "demographic_information",
+      "confidence": 0.9,
+      "mentions": 9
+    },
+    {
+      "key": "commute_habit",
+      "value": "bikes to the hospital when it is not raining",
+      "category": "behavioral_patterns",
+      "confidence": 0.8,
+      "mentions": 4
+    },
+    {
+      "key": "exercise_habits",
+      "value": "yoga class Tuesday nights, 5k runs on weekends",
+      "category": "lifestyle_choices",
+      "confidence": 0.85,
+      "mentions": 6
+    },
+    {
+      "key": "gym_preference",
+      "value": "prefers morning workouts, never after dinner",
+      "category": "lifestyle_choices",
+      "confidence": 0.8,
+      "mentions": 3
+    },
+    {
+      "key": "health_notes",
+      "value": "pollen allergy, uses antihistamines in spring",
+      "category": "lifestyle_choices",
+      "confidence": 0.85,
+      "mentions": 5
+    },
+    {
+      "key": "allergies",
+      "value": "pollen and shellfish",
+      "category": "preferences",
+      "confidence": 0.9,
+      "mentions": 6
+    },
+    {
+      "key": "sleep_preferences",
+      "value": "needs white noise to fall asleep",
+      "category": "lifestyle_choices",
+      "confidence": 0.8,
+      "mentions": 3
+    },
+    {
+      "key": "shopping_preferences",
+      "value": "grocery delivery Thursdays from the co-op",
+      "category": "lifestyle_choices",
+      "confidence": 0.8,
+      "mentions": 4
+    },
+    {
+      "key": "budget_priorities",
+      "value": "saving for a kitchen remodel",
+      "category": "goals_and_aspirations",
+      "confidence": 0.75,
+      "mentions": 3
+    },
+    {
+      "key": "short_term_goals",
+      "value": "finish the vegetable garden before summer",
+      "category": "goals_and_aspirations",
+      "confidence": 0.75,
+      "mentions": 3
+    },
+    {
+      "key": "hobbies",
+      "value": "watercolor painting and board games",
+      "category": "interests",
+      "confidence": 0.85,
+      "mentions": 5
+    },
+    {
+      "key": "board_game_preferences",
+      "value": "loves Wingspan and Azul, hates long-rule games",
+      "category": "interests",
+      "confidence": 0.85,
+      "mentions": 4
+    },
+    {
+      "key": "houseplants",
+      "value": "has a monstera and a fiddle-leaf fig, name is Figgy",
+      "category": "interests",
+      "confidence": 0.8,
+      "mentions": 3
+    },
+    {
+      "key": "cooking_style",
+      "value": "cooks big Sunday dinners, meal preps Mondays",
+      "category": "behavioral_patterns",
+      "confidence": 0.85,
+      "mentions": 5
+    },
+    {
+      "key": "restaurant_preferences",
+      "value": "favorite: the rooftop taqueria downtown",
+      "category": "preferences",
+      "confidence": 0.8,
+      "mentions": 3
+    },
+    {
+      "key": "wine_preference",
+      "value": "dry riesling, nothing oaky",
+      "category": "preferences",
+      "confidence": 0.8,
+      "mentions": 3
+    },
+    {
+      "key": "travel_plans",
+      "value": "trip to Kyoto planned for next spring",
+      "category": "goals_and_aspirations",
+      "confidence": 0.8,
+      "mentions": 4
+    },
+    {
+      "key": "language_learning",
+      "value": "learning basic Japanese phrases for the trip",
+      "category": "interests",
+      "confidence": 0.75,
+      "mentions": 2
+    },
+    {
+      "key": "car_preference",
+      "value": "drives the blue EV hatchback, charges it overnight",
+      "category": "demographic_information",
+      "confidence": 0.85,
+      "mentions": 4
+    },
+    {
+      "key": "phone_habits",
+      "value": "do not disturb from 10 pm to 6 am",
+      "category": "behavioral_patterns",
+      "confidence": 0.8,
+      "mentions": 3
+    },
+    {
+      "key": "assistant_voice_preference",
+      "value": "brief answers in the morning, chatty at night",
+      "category": "preferences",
+      "confidence": 0.7,
+      "mentions": 2
+    },
+    {
+      "key": "reminder_habits",
+      "value": "reminds her to water the plants on Sundays",
+      "category": "behavioral_patterns",
+      "confidence": 0.8,
+      "mentions": 4
+    },
+    {
+      "key": "cleaning_schedule",
+      "value": "vacuums Saturdays, laundry Sundays",
+      "category": "behavioral_patterns",
+      "confidence": 0.8,
+      "mentions": 3
+    },
+    {
+      "key": "weather_habits",
+      "value": "takes the umbrella whenever rain is over 60 percent",
+      "category": "behavioral_patterns",
+      "confidence": 0.75,
+      "mentions": 3
+    },
+    {
+      "key": "entertainment_setup",
+      "value": "casts Ghibli movies to the great room TV on Fridays",
+      "category": "home_automation",
+      "confidence": 0.85,
+      "mentions": 5
+    },
+    {
+      "key": "movie_night",
+      "value": "Friday nights are family movie night",
+      "category": "behavioral_patterns",
+      "confidence": 0.9,
+      "mentions": 6
+    },
+    {
+      "key": "kids_bedtime",
+      "value": "Theo sleeps at 8, Lena at 7:30",
+      "category": "family_background",
+      "confidence": 0.85,
+      "mentions": 4
+    },
+    {
+      "key": "school_activities",
+      "value": "Theo does swim lessons Wednesdays, Lena has art class Saturdays",
+      "category": "family_background",
+      "confidence": 0.85,
+      "mentions": 4
+    },
+    {
+      "key": "pet_care",
+      "value": "Buckwheat needs a walk before 9 am or he gets antsy",
+      "category": "family_background",
+      "confidence": 0.85,
+      "mentions": 5
+    },
+    {
+      "key": "vet_appointments",
+      "value": "Miso's annual vet visit is in March",
+      "category": "family_background",
+      "confidence": 0.75,
+      "mentions": 2
+    },
+    {
+      "key": "holiday_traditions",
+      "value": "hosts ramen night for neighbors on New Year's Eve",
+      "category": "social_interactions",
+      "confidence": 0.75,
+      "mentions": 3
+    },
+    {
+      "key": "gift_preferences",
+      "value": "loves handmade gifts, hates gift cards",
+      "category": "preferences",
+      "confidence": 0.8,
+      "mentions": 3
+    },
+    {
+      "key": "communication_style",
+      "value": "prefers direct answers first, detail after",
+      "category": "communication_style",
+      "confidence": 0.85,
+      "mentions": 5
+    },
+    {
+      "key": "news_interests",
+      "value": "follows climate policy news",
+      "category": "interests",
+      "confidence": 0.75,
+      "mentions": 3
+    },
+    {
+      "key": "donation_preferences",
+      "value": "donates monthly to the children's literacy fund",
+      "category": "life_experiences",
+      "confidence": 0.75,
+      "mentions": 2
+    },
+    {
+      "key": "mental_well_being",
+      "value": "practices meditation for anxiety when shifts feel heavy",
+      "category": "mental_and_emotional_health",
+      "confidence": 0.8,
+      "mentions": 4
+    },
+    {
+      "key": "cultural_background",
+      "value": "second-generation Vietnamese-American",
+      "category": "family_background",
+      "confidence": 0.85,
+      "mentions": 3
+    },
+    {
+      "key": "user_wants_you_to_remember",
+      "value": "always mention Theo's swim meet progress when asked",
+      "category": "assistant_memory_notes",
+      "confidence": 0.9,
+      "mentions": 2
+    },
+    {
+      "key": "office_setup",
+      "value": "night-shift napping corner with the good blackout curtains",
+      "category": "demographic_information",
+      "confidence": 0.7,
+      "mentions": 2
+    }
+  ],
+  "episodes": [
+    {
+      "text": "Asked the assistant to automate the garage door to close at 10:30 pm nightly",
+      "topics": [
+        "garage",
+        "automation"
+      ],
+      "importance": 4,
+      "ts_days_ago": 2
+    },
+    {
+      "text": "Complained the bedroom was too cold at night and asked for 68 instead",
+      "topics": [
+        "thermostat",
+        "bedroom"
+      ],
+      "importance": 3,
+      "ts_days_ago": 3
+    },
+    {
+      "text": "Said Priya's birthday is on the 14th and asked for a reminder plan",
+      "topics": [
+        "family",
+        "birthdays"
+      ],
+      "importance": 5,
+      "ts_days_ago": 4
+    },
+    {
+      "text": "Reported the great room lights flickered after the storm",
+      "topics": [
+        "lights",
+        "repair"
+      ],
+      "importance": 3,
+      "ts_days_ago": 5
+    },
+    {
+      "text": "Mentioned Theo won his first swim meet ribbon",
+      "topics": [
+        "kids",
+        "sports"
+      ],
+      "importance": 5,
+      "ts_days_ago": 6
+    },
+    {
+      "text": "Said the pollen was so bad she took an antihistamine",
+      "topics": [
+        "health",
+        "allergies"
+      ],
+      "importance": 2,
+      "ts_days_ago": 7
+    },
+    {
+      "text": "Requested a playlist of Erykah Badu for a bath night",
+      "topics": [
+        "music"
+      ],
+      "importance": 2,
+      "ts_days_ago": 8
+    },
+    {
+      "text": "Asked to order more oat milk because she ran out",
+      "topics": [
+        "groceries"
+      ],
+      "importance": 2,
+      "ts_days_ago": 8
+    },
+    {
+      "text": "Mentioned the fig tree lost a leaf and worried about overwatering",
+      "topics": [
+        "plants"
+      ],
+      "importance": 2,
+      "ts_days_ago": 9
+    },
+    {
+      "text": "Told the assistant she finished Pachinko and asked for similar books",
+      "topics": [
+        "books"
+      ],
+      "importance": 3,
+      "ts_days_ago": 10
+    },
+    {
+      "text": "Said the Sunday ramen night had nine neighbors show up",
+      "topics": [
+        "party",
+        "cooking"
+      ],
+      "importance": 4,
+      "ts_days_ago": 11
+    },
+    {
+      "text": "Complained the Friday movie kept buffering on the great room TV",
+      "topics": [
+        "streaming",
+        "networking"
+      ],
+      "importance": 3,
+      "ts_days_ago": 12
+    },
+    {
+      "text": "Booked flights for the Kyoto trip in spring",
+      "topics": [
+        "travel"
+      ],
+      "importance": 5,
+      "ts_days_ago": 14
+    },
+    {
+      "text": "Said Lena's watercolor went to the school art show",
+      "topics": [
+        "kids",
+        "art"
+      ],
+      "importance": 4,
+      "ts_days_ago": 15
+    },
+    {
+      "text": "Asked the assistant to stop announcing medications out loud",
+      "topics": [
+        "health",
+        "privacy"
+      ],
+      "importance": 4,
+      "ts_days_ago": 16
+    },
+    {
+      "text": "Said Buckwheat got skunked and needed a bath",
+      "topics": [
+        "pets"
+      ],
+      "importance": 2,
+      "ts_days_ago": 18
+    },
+    {
+      "text": "Requested a 5am alarm for an extra shift",
+      "topics": [
+        "wake",
+        "work"
+      ],
+      "importance": 3,
+      "ts_days_ago": 19
+    },
+    {
+      "text": "Said the yoga class moved to the smaller studio",
+      "topics": [
+        "exercise"
+      ],
+      "importance": 2,
+      "ts_days_ago": 20
+    },
+    {
+      "text": "Told the assistant the thermostat schedule automation was perfect",
+      "topics": [
+        "thermostat",
+        "automation"
+      ],
+      "importance": 3,
+      "ts_days_ago": 21
+    },
+    {
+      "text": "Mentioned Priya got a promotion at the architecture firm",
+      "topics": [
+        "family",
+        "work"
+      ],
+      "importance": 4,
+      "ts_days_ago": 22
+    },
+    {
+      "text": "Said she donated old board games to the literacy fund drive",
+      "topics": [
+        "charity"
+      ],
+      "importance": 3,
+      "ts_days_ago": 23
+    },
+    {
+      "text": "Complained about the commute in rain and asked about bike alternatives",
+      "topics": [
+        "commute"
+      ],
+      "importance": 2,
+      "ts_days_ago": 25
+    },
+    {
+      "text": "Asked for a reminder to take the monstera inside before frost",
+      "topics": [
+        "plants",
+        "weather"
+      ],
+      "importance": 2,
+      "ts_days_ago": 27
+    },
+    {
+      "text": "Said the rooftop taqueria was closed for renovations",
+      "topics": [
+        "food",
+        "restaurants"
+      ],
+      "importance": 2,
+      "ts_days_ago": 28
+    },
+    {
+      "text": "Reported a package thief on the porch; asked camera to record at night",
+      "topics": [
+        "security",
+        "cameras"
+      ],
+      "importance": 4,
+      "ts_days_ago": 30
+    },
+    {
+      "text": "Said Miso knocked the watercolor palette off the desk again",
+      "topics": [
+        "pets",
+        "art"
+      ],
+      "importance": 2,
+      "ts_days_ago": 32
+    },
+    {
+      "text": "Told the assistant weekends are for deep cleaning and no interruptions",
+      "topics": [
+        "cleaning",
+        "routine"
+      ],
+      "importance": 3,
+      "ts_days_ago": 34
+    },
+    {
+      "text": "Announced the kitchen remodel is approved and starts in June",
+      "topics": [
+        "money",
+        "projects"
+      ],
+      "importance": 5,
+      "ts_days_ago": 36
+    },
+    {
+      "text": "Said Theo fell asleep at 8:15 right through dinner",
+      "topics": [
+        "kids",
+        "sleep"
+      ],
+      "importance": 1,
+      "ts_days_ago": 38
+    },
+    {
+      "text": "Asked the assistant for a cortado run on her way to an early shift",
+      "topics": [
+        "coffee"
+      ],
+      "importance": 2,
+      "ts_days_ago": 40
+    },
+    {
+      "text": "Said the vegetable garden basil is thriving",
+      "topics": [
+        "garden"
+      ],
+      "importance": 2,
+      "ts_days_ago": 42
+    },
+    {
+      "text": "Mentioned Lena started calling Figgy the tree her sibling",
+      "topics": [
+        "kids",
+        "plants"
+      ],
+      "importance": 1,
+      "ts_days_ago": 44
+    },
+    {
+      "text": "Said the beagle and the cat finally napped together",
+      "topics": [
+        "pets"
+      ],
+      "importance": 1,
+      "ts_days_ago": 45
+    },
+    {
+      "text": "Requested the guest wifi password reset for neighbors",
+      "topics": [
+        "networking"
+      ],
+      "importance": 2,
+      "ts_days_ago": 47
+    },
+    {
+      "text": "Said she switched to decaf after 2pm to sleep better",
+      "topics": [
+        "coffee",
+        "sleep"
+      ],
+      "importance": 3,
+      "ts_days_ago": 50
+    },
+    {
+      "text": "Said she volunteered at the school book fair",
+      "topics": [
+        "charity",
+        "school"
+      ],
+      "importance": 3,
+      "ts_days_ago": 52
+    },
+    {
+      "text": "Told the assistant to always greet her with weather during pollen season",
+      "topics": [
+        "health",
+        "weather"
+      ],
+      "importance": 3,
+      "ts_days_ago": 55
+    },
+    {
+      "text": "Said the EV charge port cover stuck during the cold snap",
+      "topics": [
+        "cars"
+      ],
+      "importance": 2,
+      "ts_days_ago": 57
+    },
+    {
+      "text": "Mentioned picking Japanese lessons back up on the app",
+      "topics": [
+        "languages",
+        "travel"
+      ],
+      "importance": 2,
+      "ts_days_ago": 59
+    },
+    {
+      "text": "Said Priya planned a surprise for their anniversary",
+      "topics": [
+        "family"
+      ],
+      "importance": 4,
+      "ts_days_ago": 60
+    }
+  ],
+  "queries": [
+    {
+      "group": "exact",
+      "text": "what are my favorite foods",
+      "relevant": [
+        "favorite_foods"
+      ]
+    },
+    {
+      "group": "exact",
+      "text": "when do I wake up",
+      "relevant": [
+        "wake_time"
+      ]
+    },
+    {
+      "group": "exact",
+      "text": "what temperature is my bedroom",
+      "relevant": [
+        "bedroom_temperature",
+        "home_temperatures"
+      ]
+    },
+    {
+      "group": "exact",
+      "text": "what music do I like",
+      "relevant": [
+        "music_interests"
+      ]
+    },
+    {
+      "group": "exact",
+      "text": "what's my wife's name",
+      "relevant": [
+        "wife_name"
+      ]
+    },
+    {
+      "group": "exact",
+      "text": "tell me my kids' names",
+      "relevant": [
+        "son_name",
+        "daughter_name"
+      ]
+    },
+    {
+      "group": "exact",
+      "text": "what is my exercise routine",
+      "relevant": [
+        "exercise_habits",
+        "gym_preference"
+      ]
+    },
+    {
+      "group": "exact",
+      "text": "what podcasts do I listen to",
+      "relevant": [
+        "podcast_interests"
+      ]
+    },
+    {
+      "group": "exact",
+      "text": "what board games do I like",
+      "relevant": [
+        "board_game_preferences",
+        "hobbies"
+      ]
+    },
+    {
+      "group": "exact",
+      "text": "what's my coffee order",
+      "relevant": [
+        "coffee_preference"
+      ]
+    },
+    {
+      "group": "exact",
+      "text": "when is Theo's swim class",
+      "relevant": [
+        "school_activities"
+      ]
+    },
+    {
+      "group": "exact",
+      "text": "what do we do on Friday nights",
+      "relevant": [
+        "movie_night",
+        "entertainment_setup"
+      ]
+    },
+    {
+      "group": "exact",
+      "text": "what's my work schedule",
+      "relevant": [
+        "work_schedule"
+      ]
+    },
+    {
+      "group": "exact",
+      "text": "when do I vacuum",
+      "relevant": [
+        "cleaning_schedule"
+      ]
+    },
+    {
+      "group": "exact",
+      "text": "what's my car",
+      "relevant": [
+        "car_preference"
+      ]
+    },
+    {
+      "group": "morphological",
+      "text": "do I like swimming",
+      "relevant": [
+        "school_activities",
+        "exercise_habits"
+      ]
+    },
+    {
+      "group": "morphological",
+      "text": "what jobs do we do",
+      "relevant": [
+        "occupation",
+        "work_schedule"
+      ]
+    },
+    {
+      "group": "morphological",
+      "text": "my plants, what do I keep",
+      "relevant": [
+        "houseplants"
+      ]
+    },
+    {
+      "group": "morphological",
+      "text": "what books am I reading",
+      "relevant": [
+        "reading_interests"
+      ]
+    },
+    {
+      "group": "morphological",
+      "text": "how do I run errands weekly",
+      "relevant": [
+        "shopping_preferences",
+        "cleaning_schedule"
+      ]
+    },
+    {
+      "group": "morphological",
+      "text": "which games does the family play",
+      "relevant": [
+        "board_game_preferences",
+        "hobbies"
+      ]
+    },
+    {
+      "group": "morphological",
+      "text": "where does Theo swim",
+      "relevant": [
+        "school_activities"
+      ]
+    },
+    {
+      "group": "morphological",
+      "text": "when does the dog need walking",
+      "relevant": [
+        "pet_care",
+        "pet_names"
+      ]
+    },
+    {
+      "group": "morphological",
+      "text": "what am I saving money for",
+      "relevant": [
+        "budget_priorities",
+        "short_term_goals"
+      ]
+    },
+    {
+      "group": "morphological",
+      "text": "how do I sleep",
+      "relevant": [
+        "sleep_preferences",
+        "bedtime"
+      ]
+    },
+    {
+      "group": "paraphrase",
+      "text": "what should I cook tonight?",
+      "relevant": [
+        "favorite_foods",
+        "cooking_style",
+        "dietary_preferences"
+      ]
+    },
+    {
+      "group": "paraphrase",
+      "text": "any dining ideas for Saturday",
+      "relevant": [
+        "restaurant_preferences",
+        "favorite_foods"
+      ]
+    },
+    {
+      "group": "paraphrase",
+      "text": "how do I take my caffeine",
+      "relevant": [
+        "coffee_preference"
+      ]
+    },
+    {
+      "group": "paraphrase",
+      "text": "remind me who is in the family",
+      "relevant": [
+        "wife_name",
+        "son_name",
+        "daughter_name",
+        "pet_names"
+      ]
+    },
+    {
+      "group": "paraphrase",
+      "text": "what's the ideal living room vibe after dark",
+      "relevant": [
+        "great_room_lighting",
+        "home_temperatures"
+      ]
+    },
+    {
+      "group": "paraphrase",
+      "text": "what would I want to listen to on a bath night",
+      "relevant": [
+        "music_interests"
+      ]
+    },
+    {
+      "group": "paraphrase",
+      "text": "am I doing anything for exercise this week",
+      "relevant": [
+        "exercise_habits",
+        "gym_preference"
+      ]
+    },
+    {
+      "group": "paraphrase",
+      "text": "what's a good weekend project for me",
+      "relevant": [
+        "short_term_goals",
+        "hobbies",
+        "houseplants"
+      ]
+    },
+    {
+      "group": "paraphrase",
+      "text": "which films could we watch as a family",
+      "relevant": [
+        "favorite_movies",
+        "entertainment_setup",
+        "movie_night"
+      ]
+    },
+    {
+      "group": "paraphrase",
+      "text": "what should I read next",
+      "relevant": [
+        "reading_interests"
+      ]
+    },
+    {
+      "group": "paraphrase",
+      "text": "anything I should know about my allergies",
+      "relevant": [
+        "allergies",
+        "health_notes"
+      ]
+    },
+    {
+      "group": "paraphrase",
+      "text": "what's my usual bedtime wind-down",
+      "relevant": [
+        "bedtime",
+        "sleep_preferences"
+      ]
+    },
+    {
+      "group": "paraphrase",
+      "text": "who should get a birthday reminder",
+      "relevant": [
+        "wife_name"
+      ]
+    },
+    {
+      "group": "paraphrase",
+      "text": "how do my mornings usually start",
+      "relevant": [
+        "morning_routine",
+        "wake_time",
+        "coffee_preference"
+      ]
+    },
+    {
+      "group": "paraphrase",
+      "text": "what could I plant this season",
+      "relevant": [
+        "short_term_goals",
+        "houseplants"
+      ]
+    },
+    {
+      "group": "paraphrase",
+      "text": "suggestions for tonight's dinner",
+      "relevant": [
+        "favorite_foods",
+        "cooking_style",
+        "dietary_preferences"
+      ]
+    },
+    {
+      "group": "paraphrase",
+      "text": "what do I hate eating",
+      "relevant": [
+        "disliked_foods"
+      ]
+    },
+    {
+      "group": "paraphrase",
+      "text": "plan a pet-friendly errand day",
+      "relevant": [
+        "pet_care",
+        "pet_names"
+      ]
+    },
+    {
+      "group": "paraphrase",
+      "text": "what's my drink of choice in the evening",
+      "relevant": [
+        "tea_preference",
+        "wine_preference"
+      ]
+    },
+    {
+      "group": "typo",
+      "text": "whats my coffe preferance",
+      "relevant": [
+        "coffee_preference"
+      ]
+    },
+    {
+      "group": "typo",
+      "text": "thermostat scheduel for the house",
+      "relevant": [
+        "thermostat_schedule",
+        "home_temperatures"
+      ]
+    },
+    {
+      "group": "typo",
+      "text": "my doughters activites",
+      "relevant": [
+        "daughter_name",
+        "school_activities"
+      ]
+    },
+    {
+      "group": "typo",
+      "text": "what do i h8 eating",
+      "relevant": [
+        "disliked_foods"
+      ]
+    },
+    {
+      "group": "typo",
+      "text": "grocery delivery scedule",
+      "relevant": [
+        "shopping_preferences"
+      ]
+    },
+    {
+      "group": "typo",
+      "text": "garage door cheking habit",
+      "relevant": [
+        "garage_door_habit"
+      ]
+    },
+    {
+      "group": "typo",
+      "text": "favortie restaraunt downtown",
+      "relevant": [
+        "restaurant_preferences"
+      ]
+    },
+    {
+      "group": "typo",
+      "text": "meditation for anxity",
+      "relevant": [
+        "mental_well_being"
+      ]
+    },
+    {
+      "group": "typo",
+      "text": "watercooler painting",
+      "relevant": [
+        "hobbies"
+      ]
+    },
+    {
+      "group": "typo",
+      "text": "monsera and fiddle leaf",
+      "relevant": [
+        "houseplants"
+      ]
+    },
+    {
+      "group": "short_utterance",
+      "text": "turn it up",
+      "context_text": "playing our playlist",
+      "relevant": [
+        "music_interests",
+        "great_room_lighting"
+      ]
+    },
+    {
+      "group": "short_utterance",
+      "text": "yes do that",
+      "context_text": "keeping the bedroom at 68 tonight",
+      "relevant": [
+        "bedroom_temperature",
+        "home_temperatures"
+      ]
+    },
+    {
+      "group": "short_utterance",
+      "text": "order it",
+      "context_text": "grocery delivery from the co-op on Thursday",
+      "relevant": [
+        "shopping_preferences"
+      ]
+    },
+    {
+      "group": "short_utterance",
+      "text": "what about tuesday",
+      "context_text": "yoga class tuesday nights",
+      "relevant": [
+        "exercise_habits"
+      ]
+    },
+    {
+      "group": "short_utterance",
+      "text": "again please",
+      "context_text": "watering the garden plants on Sunday reminders",
+      "relevant": [
+        "reminder_habits",
+        "houseplants"
+      ]
+    },
+    {
+      "group": "short_utterance",
+      "text": "make it warmer",
+      "context_text": "the bedroom temperature",
+      "relevant": [
+        "bedroom_temperature",
+        "home_temperatures"
+      ]
+    },
+    {
+      "group": "short_utterance",
+      "text": "who else",
+      "context_text": "the kids names Theo and Lena",
+      "relevant": [
+        "son_name",
+        "daughter_name"
+      ]
+    },
+    {
+      "group": "short_utterance",
+      "text": "play it",
+      "context_text": "Motown music for dinner",
+      "relevant": [
+        "music_interests"
+      ]
+    },
+    {
+      "group": "short_utterance",
+      "text": "set a reminder",
+      "context_text": "for watering the plants on Sunday",
+      "relevant": [
+        "reminder_habits"
+      ]
+    },
+    {
+      "group": "short_utterance",
+      "text": "lock it",
+      "context_text": "the garage door before bed",
+      "relevant": [
+        "garage_door_habit"
+      ]
+    },
+    {
+      "group": "episode",
+      "text": "what did we decide about the garage door",
+      "relevant_episode_texts": [
+        "Asked the assistant to automate the garage door to close at 10:30 pm nightly"
+      ]
+    },
+    {
+      "group": "episode",
+      "text": "how did the ramen night go",
+      "relevant_episode_texts": [
+        "Said the Sunday ramen night had nine neighbors show up"
+      ]
+    },
+    {
+      "group": "episode",
+      "text": "what happened with Theo at the meet",
+      "relevant_episode_texts": [
+        "Mentioned Theo won his first swim meet ribbon"
+      ]
+    },
+    {
+      "group": "episode",
+      "text": "why was the bedroom cold",
+      "relevant_episode_texts": [
+        "Complained the bedroom was too cold at night and asked for 68 instead"
+      ]
+    },
+    {
+      "group": "episode",
+      "text": "did we figure out the TV streaming",
+      "relevant_episode_texts": [
+        "Complained the Friday movie kept buffering on the great room TV"
+      ]
+    },
+    {
+      "group": "episode",
+      "text": "what did I say about Priya's work",
+      "relevant_episode_texts": [
+        "Mentioned Priya got a promotion at the architecture firm"
+      ]
+    },
+    {
+      "group": "episode",
+      "text": "the skunk incident",
+      "relevant_episode_texts": [
+        "Said Buckwheat got skunked and needed a bath"
+      ]
+    },
+    {
+      "group": "episode",
+      "text": "when did we book the Japan flights",
+      "relevant_episode_texts": [
+        "Booked flights for the Kyoto trip in spring"
+      ]
+    },
+    {
+      "group": "episode",
+      "text": "the porch security thing",
+      "relevant_episode_texts": [
+        "Reported a package thief on the porch; asked camera to record at night"
+      ]
+    },
+    {
+      "group": "episode",
+      "text": "what did I ask about caffeine",
+      "relevant_episode_texts": [
+        "Said she switched to decaf after 2pm to sleep better"
+      ]
+    },
+    {
+      "group": "negative",
+      "text": "what is the capital of France",
+      "relevant": []
+    },
+    {
+      "group": "negative",
+      "text": "how many people live in Ohio",
+      "relevant": []
+    },
+    {
+      "group": "negative",
+      "text": "tell me about the Roman empire",
+      "relevant": []
+    },
+    {
+      "group": "negative",
+      "text": "what's new in quantum computing",
+      "relevant": []
+    },
+    {
+      "group": "negative",
+      "text": "translate hello into French",
+      "relevant": []
+    },
+    {
+      "group": "negative",
+      "text": "who won the game last night",
+      "relevant": []
+    },
+    {
+      "group": "negative",
+      "text": "what does photosynthesis mean",
+      "relevant": []
+    },
+    {
+      "group": "negative",
+      "text": "convert 10 dollars to euros",
+      "relevant": []
+    },
+    {
+      "group": "negative",
+      "text": "summarize this url for me",
+      "relevant": []
+    },
+    {
+      "group": "negative",
+      "text": "what time is it in Tokyo",
+      "relevant": []
+    }
+  ]
+}
