@@ -4090,6 +4090,7 @@ def _run_memory_cycle_once(llm_client: Any, settings: Dict[str, Any]) -> Dict[st
     _MEMORY_TASK_STARTED_AT = cycle_start
     stats_key = "memory_plus_core:stats"
     try:
+        _memory_plus_warn_stock_conflict(redis_client, settings)
         stats = _run_cycle(llm_client, settings) if llm_client is not None else {
             "enabled_platform_count": 0,
             "scanned_scopes": 0,
@@ -4317,81 +4318,716 @@ def wipe_memory_plus_core_data() -> int:
         return deleted_total
 
 
-# ---- WebUI tab (Phase 2: read-only overview; Recall tester arrives in Phase 4) ----
+# ---- WebUI tab (spec 10): overview, people/rooms data, recall tester, maintenance ----
 
-def get_htmlui_tab_data(*, redis_client=None, **_kwargs) -> Dict[str, Any]:
-    """Plain-JSON tab payload: memory docs owned by this core, bounded output."""
-    client = redis_client if redis_client is not None else globals().get("redis_client")
-    user_docs: List[str] = []
-    room_docs: List[str] = []
-    aux_docs: List[str] = []
-    if client is not None:
-        for raw_key in _memory_plus_scan_keys(client, "memory_plus_core:*"):
-            key = str(raw_key or "")
-            if ":aux:" in key:
-                aux_docs.append(key)
-            elif ":user:" in key:
-                user_docs.append(key)
-            elif ":room:" in key:
-                room_docs.append(key)
+_MEMORY_UI_EXPORT_DIR = "agent_lab/memory_plus_core_exports"
 
-    def _count_facts(key: str) -> Tuple[int, float, str]:
+
+_MEMORY_CONFLICT_LAST_WARNED = 0.0
+
+
+def _memory_plus_warn_stock_conflict(redis_obj: Any, settings: Dict[str, Any]) -> None:
+    """Log the stock-core conflict at most once per hour (spec 8)."""
+    global _MEMORY_CONFLICT_LAST_WARNED
+    try:
+        status = _memory_plus_conflict_status(redis_obj, settings)
+        now_ts = time.time()
+        if status.get("warning") and now_ts - float(_MEMORY_CONFLICT_LAST_WARNED) >= 3600.0:
+            logger.warning("[memory_plus_core] %s", status["warning"])
+            _MEMORY_CONFLICT_LAST_WARNED = now_ts
+    except Exception:
+        pass
+
+
+def _memory_plus_conflict_status(client: Any, settings: Dict[str, Any]) -> Dict[str, Any]:
+    stock_running = False
+    try:
+        raw = client.get("memory_core_running") if client is not None else None
+        stock_running = _as_bool(raw, False)
+    except Exception:
+        stock_running = False
+    injecting = _as_bool(settings.get("inject_context"), True)
+    warning = ""
+    if stock_running and injecting:
+        warning = (
+            "CONFLICT: the stock Memory Core is running and Memory+ injection is ON — "
+            "both cores will inject duplicate memory context and fight over tools. "
+            "For A/B testing set Inject Memory Context OFF (shadow mode); to cut over, "
+            "disable the stock Memory Core."
+        )
+    mode = "injecting" if injecting else "shadow mode (extraction only, no injection)"
+    return {"stock_running": stock_running, "injecting": injecting, "mode": mode, "warning": warning}
+
+
+def _memory_plus_doc_label(key: str, scope: str) -> str:
+    tail = str(key or "").strip()
+    prefix = f"memory_plus_core:{scope}:"
+    if tail.startswith(prefix):
+        tail = tail[len(prefix):]
+    return tail or key
+
+
+def _memory_plus_stats_snapshot(client: Any) -> Dict[str, Any]:
+    stats: Dict[str, Any] = {}
+    try:
+        stats = dict(client.hgetall("memory_plus_core:stats") or {})
+    except Exception:
+        stats = {}
+
+    def _ts(name: str) -> str:
+        try:
+            value = float(stats.get(name) or 0.0)
+        except Exception:
+            value = 0.0
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(value)) if value else "never"
+
+    return {
+        "last_run": _ts("last_run_ts"),
+        "processed": _safe_int(stats.get("processed_messages"), 0, min_value=0),
+        "updated_facts": _safe_int(stats.get("updated_facts"), 0, min_value=0),
+        "last_consolidation": _ts("last_consolidation_ts"),
+        "consolidation_summary": _as_text(stats.get("last_consolidation_summary")).strip() or "{}",
+        "last_error": _as_text(stats.get("last_error")).strip(),
+    }
+
+
+def _memory_plus_doc_rows(client: Any) -> List[Dict[str, Any]]:
+    """One row per user/room doc, with parsed content for tables (bounded)."""
+    rows: List[Dict[str, Any]] = []
+    for raw_key in _memory_plus_scan_keys(client, "memory_plus_core:user:*") + _memory_plus_scan_keys(
+        client, "memory_plus_core:room:*"
+    ):
+        key = str(raw_key or "")
+        if not key or ":backup:" in key or ":aux:" in key:
+            continue
+        scope = "user" if ":user:" in key else "room"
         try:
             doc = load_doc(client, key, now=time.time())
         except Exception:
-            return 0, 0.0, ""
+            doc = {}
         facts = doc.get("facts") if isinstance(doc.get("facts"), dict) else {}
-        newest = max(
-            (float(fact.get("updated_at") or 0.0) for fact in facts.values() if isinstance(fact, dict)),
-            default=0.0,
-        )
-        preview_parts = []
-        for fact in list(facts.values())[:3]:
-            if isinstance(fact, dict):
-                text = _memory_plus_sanitize_text(value_to_text(fact.get("value"), max_chars=120), 120)
-                if text:
-                    preview_parts.append(text)
-        return len(facts), newest, "; ".join(preview_parts)
-
-    items: List[Dict[str, str]] = []
-    fact_total = 0
-    rows: List[Tuple[str, str, int, float, str]] = []
-    for kind, keys in (("User", user_docs), ("Room", room_docs)):
-        for key in keys:
-            count, newest, preview = _count_facts(key)
-            fact_total += count
-            tail = key.rsplit(":", 2)[-2:]
-            rows.append((kind, "/".join(tail), count, newest, preview))
-    rows.sort(key=lambda row: (-row[2], row[0], row[1]))
-    for scope, name, count, newest, preview in rows[:25]:
-        when = ""
-        if newest:
-            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(newest))
-        detail = f"Last updated: {when or 'n/a'}"
-        if preview:
-            detail = f"{detail} · {preview}"[:280]
-        items.append(
+        fact_rows = []
+        for fact_key, fact in sorted(facts.items())[:80]:
+            if not isinstance(fact, dict):
+                continue
+            updated_at = _as_float(fact.get("updated_at"), 0.0, min_value=0.0)
+            fact_rows.append(
+                {
+                    "key": fact_key,
+                    "value": _memory_plus_sanitize_text(value_to_text(fact.get("value"), max_chars=160), 160),
+                    "confidence": round(_coerce_confidence(fact.get("confidence")), 2),
+                    "source": _as_text(fact.get("source")).strip().lower() or "stated",
+                    "mentions": _safe_int(fact.get("mentions"), 1, min_value=1),
+                    "updated": time.strftime("%m-%d %H:%M", time.localtime(updated_at)) if updated_at else "-",
+                }
+            )
+        episode_rows = []
+        profile_card = ""
+        if scope == "user":
+            try:
+                for episode in _memory_load_episodes(client, key)[:40]:
+                    summary = _memory_plus_sanitize_text(episode.get("summary"), 160)
+                    if not summary:
+                        continue
+                    occurred_at = _as_float(episode.get("occurred_at"), 0.0, min_value=0.0)
+                    episode_rows.append(
+                        {
+                            "id": _as_text(episode.get("id")).strip(),
+                            "summary": summary,
+                            "status": _as_text(episode.get("status")).strip().lower() or "historical",
+                            "salience": round(_as_float(episode.get("salience"), 0.0, min_value=0.0), 2),
+                            "when": time.strftime("%m-%d %H:%M", time.localtime(occurred_at)) if occurred_at else "-",
+                        }
+                    )
+            except Exception:
+                episode_rows = []
+            try:
+                card = _memory_profile_card(client, key, doc, max_items=8)
+                card_items = card.get("items") if isinstance(card.get("items"), list) else []
+                profile_card = "; ".join(
+                    f"{_as_text(item.get('key')).strip()}: {_memory_plus_sanitize_text(value_to_text(item.get('value'), max_chars=80), 80)}"
+                    for item in card_items[:8]
+                    if isinstance(item, dict)
+                )[:600]
+            except Exception:
+                profile_card = ""
+        rows.append(
             {
-                "title": f"{scope}: {name}",
-                "subtitle": f"facts: {count}",
-                "detail": detail,
+                "doc_key": key,
+                "scope": scope,
+                "label": _memory_plus_doc_label(key, scope),
+                "fact_count": len(facts),
+                "facts": fact_rows,
+                "episodes": episode_rows,
+                "profile_card": profile_card,
             }
         )
+    rows.sort(key=lambda row: (-row["fact_count"], row["scope"], row["label"]))
+    return rows[:40]
+
+
+def _memory_plus_fact_table_columns() -> List[Dict[str, str]]:
+    return [
+        {"key": "key", "label": "Key"},
+        {"key": "value", "label": "Value"},
+        {"key": "confidence", "label": "Conf"},
+        {"key": "source", "label": "Source"},
+        {"key": "mentions", "label": "Mentions"},
+        {"key": "updated", "label": "Updated"},
+    ]
+
+
+def _memory_plus_episode_table_columns() -> List[Dict[str, str]]:
+    return [
+        {"key": "when", "label": "When"},
+        {"key": "summary", "label": "Summary"},
+        {"key": "status", "label": "Status"},
+        {"key": "salience", "label": "Salience"},
+    ]
+
+
+def _memory_plus_recall_test(
+    *,
+    query: str,
+    doc_key: str,
+    room_key: str = "",
+    hour: Optional[int] = None,
+    redis_obj: Any,
+) -> str:
+    """Read-only tester: rank + would-be-injected text (spec 10, item 4)."""
+    query_text = _memory_plus_sanitize_text(query, 500)
+    if not query_text:
+        raise ValueError("Enter a test query.")
+    if not doc_key or not doc_key.startswith(("memory_plus_core:user:", "memory_plus_core:room:")):
+        raise ValueError("Choose a stored Memory+ document to test against.")
+    target_doc = load_doc(redis_obj, doc_key, now=time.time()) if doc_key else {}
+    room_doc = load_doc(redis_obj, room_key, now=time.time()) if room_key else {}
+    settings = _settings(redis_obj)
+    all_docs = (
+        _memory_plus_doc_retriever_docs(target_doc, kind="fact")
+        + _memory_plus_doc_retriever_docs(room_doc, kind="fact")
+        + _memory_plus_episode_retriever_docs(redis_obj, doc_key)
+        + _memory_plus_episode_retriever_docs(redis_obj, room_key)
+    )
+    lines = [f"Query: {query_text}", f"Docs scored: {len(all_docs)}"]
+    if not all_docs:
+        lines.append("Nothing stored yet for this document — nothing would be injected.")
+        return "\n".join(lines)
+    retriever = get_retriever(settings)
+    index = retriever.build_index(all_docs)
+    now_ts = time.time()
+    hour_value = _safe_int(hour, time.localtime(now_ts).tm_hour, min_value=0, max_value=23)
+    ranked = retriever.rank(
+        {"text": query_text, "now": now_ts, "hour": hour_value},
+        index,
+        k=10,
+    )
+    lines.append("---- Ranked results (top 10) ----")
+    for item in ranked:
+        doc = item["doc"]
+        bd = item.get("breakdown") or {}
+        lines.append(
+            f"{item['score']:.3f}  [{doc.kind}] {doc.key or doc.id}\n"
+            f"    value: {_memory_plus_sanitize_text(doc.raw_text, 90)}\n"
+            f"    bm25={bd.get('bm25', 0):.2f} tri={bd.get('trigram', 0):.2f} "
+            f"concept={bd.get('concept', 0):.2f} intent={bd.get('intent', 0):.2f} quality={bd.get('quality', 0):.2f}"
+            f"{'  (anchor)' if is_anchor(doc) else ''}{'  BELOW MIN_SCORE' if item['score'] < MIN_SCORE else ''}"
+        )
+    if not _as_bool(settings.get("inject_context"), True):
+        lines.append("---- Injection preview ----\nShadow mode is ON: this core would inject nothing.")
+        return "\n".join(lines)
+    selection = _memory_plus_select_injection(
+        retriever=retriever,
+        index=index,
+        query={"text": query_text, "now": now_ts, "hour": hour_value},
+        settings=settings,
+        max_facts=_as_int(settings.get("max_facts"), 30, min_value=1, max_value=200),
+        max_episodes=_as_int(settings.get("max_episodes"), 5, min_value=0, max_value=50),
+    )
+    lines.append("---- Would be injected ----")
+    fact_lines = _memory_plus_facts_summary_lines(selection["facts"])
+    for line in fact_lines:
+        lines.append(line)
+    if selection.get("episodes"):
+        parts = [
+            f"{_memory_plus_when_text(row['doc'].ts)}: {row.get('injected_text', '')}"[:180]
+            for row in selection["episodes"][:5]
+        ]
+        parts = [part for part in parts if part]
+        if parts:
+            lines.append("Recent/related: " + "; ".join(parts))
+    if not fact_lines and not selection.get("episodes"):
+        lines.append("(nothing above the minimum score — only anchors would inject)")
+    fragment_text = "\n".join(fact_lines)
+    lines.append(
+        f"\nFragment length: {len(fragment_text)} chars (context_max_chars limit "
+        f"{_as_int(settings.get('context_max_chars'), 5000)})."
+    )
+    return "\n".join(lines)
+
+
+def _memory_maintenance_action(tool_action: str, _val: Any, client: Any) -> Dict[str, Any]:
+    """Maintenance actions behind the memory_tool_action dispatcher (spec 10, item 5)."""
+    if tool_action == "run_extraction":
+        try:
+            llm_client = _get_primary_llm_client_from_env()
+        except Exception:
+            llm_client = None
+        if llm_client is None:
+            raise ValueError("No LLM client is available in this environment; enable one before running extraction.")
+        try:
+            _run_memory_cycle_once(llm_client, _settings(client))
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from exc
+        return {"ok": True, "message": "Extraction cycle finished — see the Overview tab for its stats."}
+    if tool_action == "run_consolidation":
+        try:
+            llm_client = _get_primary_llm_client_from_env()
+        except Exception:
+            llm_client = None
+        settings = _settings(client)
+        non_llm = _run_memory_consolidation(client, settings)
+        llm_stats = (
+            _memory_plus_consolidation_run(client, llm_client, settings)
+            if llm_client is not None
+            else {"proposed": 0, "rejected": 0, "note": "no LLM client available"}
+        )
+        try:
+            client.hset(
+                "memory_plus_core:stats",
+                mapping={
+                    "last_consolidation_ts": str(time.time()),
+                    "last_consolidation_summary": json.dumps(llm_stats, ensure_ascii=False, sort_keys=True),
+                },
+            )
+        except Exception:
+            pass
+        return {
+            "ok": True,
+            "message": (
+                f"Housekeeping: {non_llm.get('consolidated_facts', 0)} fact(s) canonicalized across "
+                f"{non_llm.get('consolidated_docs', 0)} doc(s). Proposal run: {json.dumps(llm_stats, ensure_ascii=False)}"
+            ),
+        }
+    if tool_action == "import_stock":
+        summary = _memory_plus_stock_import(client)
+        if not isinstance(summary, dict) or not summary.get("ok"):
+            raise ValueError("Stock import failed; see the core log for details.")
+        return {"ok": True, "message": f"Imported from stock memory core: {json.dumps(summary, ensure_ascii=False)}"}
+    if tool_action == "export_backup":
+        export: Dict[str, str] = {}
+        for key in _memory_plus_scan_keys(client, "memory_plus_core:*"):
+            value = client.get(key)
+            if value is not None:
+                export[str(key)] = str(value)
+        if not export:
+            raise ValueError("Nothing stored yet — export would be empty.")
+        export_dir = Path(_MEMORY_UI_EXPORT_DIR)
+        export_dir.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        path = export_dir / f"memory_plus_backup_{stamp}.json"
+        path.write_text(json.dumps(export, ensure_ascii=False, indent=1), encoding="utf-8")
+        return {"ok": True, "message": f"Exported {len(export)} key(s) to {path}."}
+    if tool_action == "restore_backup":
+        raw_json = _as_text(_val("backup_json")).strip()
+        path_value = _as_text(_val("backup_path")).strip()
+        if not raw_json and path_value:
+            try:
+                raw_json = Path(path_value).read_text(encoding="utf-8")
+            except Exception as exc:
+                raise ValueError(f"Could not read the backup file: {exc}") from exc
+        if not raw_json:
+            raise ValueError("Paste backup JSON into the Backup JSON field or provide a file path.")
+        try:
+            parsed = json.loads(raw_json)
+        except Exception as exc:
+            raise ValueError(f"Backup content is not valid JSON: {exc}") from exc
+        doc_map = parsed.get("documents") if isinstance(parsed.get("documents"), dict) else parsed
+        if not isinstance(doc_map, dict):
+            raise ValueError("Backup JSON should map memory_plus_core:* keys to their stored values.")
+        restored = 0
+        skipped = 0
+        for key, doc_payload in doc_map.items():
+            key = str(key or "")
+            if not key.startswith("memory_plus_core:") or key.endswith("_settings") or key.endswith(":stats"):
+                skipped += 1
+                continue
+            if not isinstance(doc_payload, str):
+                doc_payload = json.dumps(doc_payload, ensure_ascii=False)
+            try:
+                parsed_doc = parse_memory_doc(doc_payload)
+                if not parsed_doc.get("facts"):
+                    skipped += 1
+                    continue
+            except Exception:
+                skipped += 1
+                continue
+            save_doc(client, key, parsed_doc)
+            restored += 1
+        return {"ok": True, "message": f"Restored {restored} doc(s); skipped {skipped} key(s)."}
+    if tool_action == "wipe_all":
+        if _as_text(_val("wipe_confirm")).strip().upper() != "WIPE":
+            raise ValueError("Type WIPE into the confirmation field to erase all Memory+ data.")
+        removed = wipe_memory_plus_core_data()
+        return {"ok": True, "message": f"Wiped {removed} Memory+ key(s). Shared Tater label keys were kept."}
+    raise KeyError(f"Unsupported maintenance action: {tool_action}")
+
+
+def handle_htmlui_tab_action(
+    *,
+    action: str,
+    payload: Optional[Dict[str, Any]] = None,
+    redis_client: Any = None,
+    core_key: str = "",
+    **_kwargs,
+) -> Dict[str, Any]:
+    """Server-side validation for every Memory+ tab action (spec 10)."""
+    client = redis_client if redis_client is not None else globals().get("redis_client")
+    if client is None:
+        raise ValueError("Memory+ is not connected to Redis yet.")
+    payload = payload if isinstance(payload, dict) else {}
+    values = payload.get("values") if isinstance(payload.get("values"), dict) else {}
+
+    def _val(name: str) -> Any:
+        for source in (values, payload):
+            if isinstance(source, dict) and source.get(name) not in (None, ""):
+                return source.get(name)
+        return ""
+
+    if action == "memory_tool_action":
+        tool_action = _as_text(_val("tool_action")).strip() or "recall_test"
+        if tool_action == "recall_test":
+            hour_raw = _val("tester_hour")
+            hour = (
+                _safe_int(hour_raw, None, min_value=0, max_value=23)
+                if str(hour_raw or "").strip() != ""
+                else None
+            )
+            return {
+                "ok": True,
+                "message": _memory_plus_recall_test(
+                    query=_as_text(_val("tester_query")).strip(),
+                    doc_key=_as_text(_val("tester_doc_key")).strip(),
+                    room_key=_as_text(_val("tester_room_key")).strip(),
+                    hour=hour,
+                    redis_obj=client,
+                ),
+            }
+        return _memory_maintenance_action(tool_action, _val, client)
+
+    if action == "memory_manage_doc":
+        doc_key = _as_text(_val("doc_key")).strip()
+        if not doc_key.startswith(("memory_plus_core:user:", "memory_plus_core:room:")):
+            raise ValueError("Select a stored Memory+ document first.")
+        doc = load_doc(client, doc_key, now=time.time())
+        changed = False
+        notes = []
+        edit_key = _as_text(_val("edit_key")).strip()
+        if edit_key:
+            fact_key = normalize_fact_key(edit_key)
+            if not fact_key:
+                raise ValueError("The fact key to edit is not a valid snake_case key.")
+            new_value = _val("edit_value")
+            if new_value in (None, ""):
+                raise ValueError("Provide the new value to store.")
+            merge_observation(
+                doc,
+                {
+                    "candidate_key": fact_key,
+                    "value": new_value,
+                    "confidence": _as_float(_val("edit_confidence"), 0.85, min_value=0.0, max_value=1.0),
+                    "source": "manual",
+                    "supersedes": True,
+                    "evidence": [],
+                },
+                min_confidence=0.0,
+                default_ttl_sec=0,
+                allow_new_keys=True,
+                now=time.time(),
+            )
+            notes.append(f"Set '{fact_key}'.")
+            changed = True
+        forget_raw = _as_text(_val("forget_keys")).strip()
+        if forget_raw:
+            keys = [normalize_fact_key(part) for part in re.split(r"[,\s]+", forget_raw)]
+            keys = [part for part in keys if part]
+            if not keys:
+                raise ValueError("No valid fact keys to forget.")
+            removed = forget_fact_keys(doc, keys)
+            if not removed:
+                raise KeyError("None of the given fact keys exist in this document.")
+            notes.append(f"Forgot {removed} fact(s).")
+            changed = True
+        episode_id = _as_text(_val("forget_episode_id")).strip()
+        if episode_id:
+            removed = _memory_delete_episodes(client, doc_key, [episode_id])
+            if not removed:
+                raise KeyError("No episode with that id exists.")
+            notes.append(f"Forgot episode '{episode_id}'.")
+        if changed:
+            save_doc(client, doc_key, doc, now=time.time())
+        if not notes:
+            raise ValueError("Nothing to change: fill an edit, forget, or episode field.")
+        return {"ok": True, "message": " ".join(notes)}
+
+    raise KeyError(f"Unsupported Memory+ tab action: {action}")
+
+
+def get_htmlui_tab_data(*, redis_client=None, **_kwargs) -> Dict[str, Any]:
+    """Plain-JSON tab payload: overview, people/rooms, recall tester, maintenance (spec 10)."""
+    client = redis_client if redis_client is not None else globals().get("redis_client")
+    conflict = _memory_plus_conflict_status(client, _settings(client))
+    stats = _memory_plus_stats_snapshot(client)
+    doc_rows = _memory_plus_doc_rows(client)
+    user_rows = [row for row in doc_rows if row["scope"] == "user"]
+    room_rows = [row for row in doc_rows if row["scope"] == "room"]
+    fact_total = sum(row["fact_count"] for row in doc_rows)
+    episode_total = sum(len(row["episodes"]) for row in user_rows)
+
+    error_line = f"\nLast error: {stats['last_error']}" if stats.get("last_error") else ""
+    overview_text = (
+        f"Mode: {conflict['mode']}\n"
+        f"Stock Memory Core running: {'yes' if conflict['stock_running'] else 'no'}\n"
+        f"People docs: {len(user_rows)} · Room docs: {len(room_rows)} · Facts: {fact_total} · Episodes: {episode_total}\n"
+        f"Last extraction run: {stats['last_run']} (processed {stats['processed']}, updated {stats['updated_facts']} facts)\n"
+        f"Last consolidation: {stats['last_consolidation']}\n"
+        f"Consolidation summary: {stats['consolidation_summary']}{error_line}"
+    )
+    forms: List[Dict[str, Any]] = [
+        {
+            "id": "__memory_plus_overview__",
+            "title": "Overview",
+            "group": "overview",
+            "subtitle": conflict["warning"] or "Memory+ runs in its own namespace; see Mode above.",
+            "sections": [
+                {
+                    "label": "Status",
+                    "fields": [
+                        {
+                            "key": "overview_text",
+                            "label": "Status",
+                            "type": "textarea",
+                            "value": overview_text,
+                            "read_only": True,
+                        }
+                    ],
+                }
+            ],
+        }
+    ]
+    for row in user_rows:
+        sections = [
+            {
+                "label": "Profile Card",
+                "fields": [
+                    {
+                        "key": "profile_card_text",
+                        "label": "Profile Card",
+                        "type": "textarea",
+                        "value": row["profile_card"] or "(not generated yet)",
+                        "read_only": True,
+                    }
+                ],
+            },
+            {
+                "label": f"Facts ({row['fact_count']})",
+                "fields": [
+                    {
+                        "key": "facts_table",
+                        "label": "Facts",
+                        "type": "table",
+                        "columns": _memory_plus_fact_table_columns(),
+                        "rows": row["facts"],
+                    }
+                ],
+            },
+            {
+                "label": "Manage Facts",
+                "inline": True,
+                "fields": [
+                    {"key": "doc_key", "label": "Doc", "type": "hidden", "value": row["doc_key"]},
+                    {
+                        "key": "edit_key",
+                        "label": "Edit Fact Key",
+                        "type": "text",
+                        "value": "",
+                        "description": "Set/overwrite a fact (source becomes 'manual', previous value is kept).",
+                    },
+                    {"key": "edit_value", "label": "New Value", "type": "text", "value": ""},
+                    {"key": "edit_confidence", "label": "Confidence", "type": "number", "value": 0.85, "min": 0.0, "max": 1.0},
+                    {
+                        "key": "forget_keys",
+                        "label": "Forget Fact Keys",
+                        "type": "text",
+                        "value": "",
+                        "description": "Comma-separated exact keys to remove from this person.",
+                    },
+                    {
+                        "key": "forget_episode_id",
+                        "label": "Forget Episode ID",
+                        "type": "text",
+                        "value": "",
+                        "description": "Exact episode id to delete from this person.",
+                    },
+                ],
+            },
+        ]
+        if row["episodes"]:
+            sections.append(
+                {
+                    "label": f"Episodes ({len(row['episodes'])})",
+                    "fields": [
+                        {
+                            "key": "episodes_table",
+                            "label": "Episodes",
+                            "type": "table",
+                            "columns": _memory_plus_episode_table_columns(),
+                            "rows": row["episodes"],
+                        }
+                    ],
+                }
+            )
+        forms.append(
+            {
+                "id": row["doc_key"],
+                "title": row["label"],
+                "group": "person" if row["scope"] == "user" else "room_group",
+                "subtitle": f"{row['scope']} doc · {row['fact_count']} fact(s)",
+                "save_action": "memory_manage_doc",
+                "save_label": "Apply Changes",
+                "save_success_text": "Memory+ document updated.",
+                "settings_title": f"Manage {row['label']}",
+                "sections": sections,
+            }
+        )
+    doc_options = [
+        {"value": row["doc_key"], "label": f"{row['scope']}: {row['label']} ({row['fact_count']} facts)"}
+        for row in doc_rows
+    ]
 
     return {
-        "summary": (
-            "Memory+ overview: facts and episodes stored by this core under its own namespace."
-            if items
-            else "Memory+ stores corrected facts and episodes in its own namespace, separately from the stock memory core."
-        ),
+        "summary": "Memory+: corrected facts, episodes, recall testing, and maintenance in this core's own namespace.",
         "stats": [
-            {"label": "User docs", "value": len(user_docs)},
-            {"label": "Room docs", "value": len(room_docs)},
-            {"label": "Aux stores", "value": len(aux_docs)},
+            {"label": "People docs", "value": len(user_rows)},
+            {"label": "Room docs", "value": len(room_rows)},
             {"label": "Facts", "value": fact_total},
+            {"label": "Episodes", "value": episode_total},
+            {"label": "Mode", "value": conflict["mode"]},
         ],
-        "items": items,
-        "empty_message": "No memory documents yet — facts appear here after conversations are processed.",
+        "empty_message": "No memory documents yet — facts appear after conversations are processed.",
+        "ui": {
+            "kind": "settings_manager",
+            "title": "Memory+ Manager",
+            "default_tab": "overview",
+            "manager_tabs": [
+                {
+                    "key": "overview",
+                    "label": "Overview",
+                    "source": "items",
+                    "item_group": "overview",
+                    "empty_message": "No overview data.",
+                },
+                {
+                    "key": "people",
+                    "label": "People",
+                    "source": "items",
+                    "item_group": "person",
+                    "selector": True,
+                    "selector_label": "Select Person",
+                    "empty_message": "No person documents yet.",
+                },
+                {
+                    "key": "rooms",
+                    "label": "Rooms",
+                    "source": "items",
+                    "item_group": "room_group",
+                    "selector": True,
+                    "selector_label": "Select Room",
+                    "empty_message": "No room documents yet.",
+                },
+                {
+                    "key": "tools",
+                    "label": "Recall Tester + Maintenance",
+                    "source": "add_form",
+                },
+            ],
+            "item_forms": forms,
+            "add_form": {
+                "action": "memory_tool_action",
+                "submit_label": "Run",
+                "fields": [
+                    {
+                        "key": "tool_action",
+                        "label": "Tool Action",
+                        "type": "select",
+                        "value": "recall_test",
+                        "options": [
+                            {"value": "recall_test", "label": "Recall Tester (read-only)"},
+                            {"value": "run_extraction", "label": "Run Extraction Now"},
+                            {"value": "run_consolidation", "label": "Run Consolidation Now"},
+                            {"value": "import_stock", "label": "Import From Stock Memory Core"},
+                            {"value": "export_backup", "label": "Export Backup JSON (file)"},
+                            {"value": "restore_backup", "label": "Restore Backup JSON"},
+                            {"value": "wipe_all", "label": "Wipe All Memory+ Data"},
+                        ],
+                    },
+                    {
+                        "key": "tester_query",
+                        "label": "Tester Query",
+                        "type": "text",
+                        "value": "",
+                        "placeholder": "what should I cook tonight",
+                        "description": "Used only by the Recall Tester: exactly what a user would say.",
+                    },
+                    {
+                        "key": "tester_doc_key",
+                        "label": "Tester Person/Room Doc",
+                        "type": "select",
+                        "value": doc_options[0]["value"] if doc_options else "",
+                        "options": doc_options or [{"value": "", "label": "(no documents yet)"}],
+                    },
+                    {
+                        "key": "tester_room_key",
+                        "label": "Tester Room Doc (optional)",
+                        "type": "select",
+                        "value": "",
+                        "options": [{"value": "", "label": "(none)"}]
+                        + [{"value": row["doc_key"], "label": row["label"]} for row in room_rows],
+                    },
+                    {
+                        "key": "tester_hour",
+                        "label": "Tester Local Hour (optional)",
+                        "type": "number",
+                        "value": "",
+                        "min": 0,
+                        "max": 23,
+                        "description": "Leave empty to use the current hour (affects time-of-day intent matching).",
+                    },
+                    {
+                        "key": "backup_json",
+                        "label": "Backup JSON",
+                        "type": "textarea",
+                        "value": "",
+                        "description": "Used only by Restore. Paste the content of an exported backup file.",
+                    },
+                    {
+                        "key": "backup_path",
+                        "label": "Backup File Path (optional)",
+                        "type": "text",
+                        "value": "",
+                        "placeholder": f"{_MEMORY_UI_EXPORT_DIR}/memory_plus_backup_YYYYMMDD_HHMMSS.json",
+                    },
+                    {
+                        "key": "wipe_confirm",
+                        "label": "Type WIPE To Confirm Full Wipe",
+                        "type": "text",
+                        "value": "",
+                        "placeholder": "WIPE",
+                        "description": "Used only by the wipe action.",
+                    },
+                ],
+            },
+        },
     }
 
 
