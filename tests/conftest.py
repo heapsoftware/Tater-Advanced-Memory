@@ -91,10 +91,11 @@ class FakeRedis:
         return len(self._lists[key])
 
     def lrange(self, key, start, stop):
+        # Redis LRANGE is INCLUSIVE of stop; Python slices are not.
         items = self._lists.get(key, [])
         if stop < 0:
-            stop = len(items) + stop + 1
-        return list(items[start : stop])
+            stop = len(items) + stop
+        return list(items[start : stop + 1])
 
     def llen(self, key):
         return len(self._lists.get(key, []))

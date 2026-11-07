@@ -629,6 +629,27 @@ def _coerce_retired_facts(raw: Any) -> List[Dict[str, Any]]:
     return out[-100:]
 
 
+_COERCED_PREVIOUS_LIMIT = 3
+
+
+def _coerce_previous(raw: Any) -> List[Dict[str, Any]]:
+    """Previous values kept by the spec 7.4 replace rule (max 3)."""
+    source = raw if isinstance(raw, list) else []
+    out: List[Dict[str, Any]] = []
+    for item in source:
+        if isinstance(item, dict) and "value" in item:
+            out.append({"value": _json_safe(item.get("value")), "until": _safe_float(item.get("until"), 0.0)})
+    return out[-_COERCED_PREVIOUS_LIMIT:]
+
+
+def _coerce_pending_alt(raw: Any) -> Optional[Dict[str, Any]]:
+    """Alternate value awaiting its second sighting (spec 7.4), or None."""
+    if not isinstance(raw, dict) or "value" not in raw:
+        return None
+    count = _safe_int(raw.get("count"), 1, min_value=1)
+    return {"value": _json_safe(raw.get("value")), "count": count, "last_seen": _safe_float(raw.get("last_seen"), 0.0)}
+
+
 def empty_memory_doc(*, now: Optional[float] = None) -> Dict[str, Any]:
     ts = float(now if now is not None else time.time())
     return {
@@ -680,6 +701,14 @@ def parse_memory_doc(raw: Any, *, now: Optional[float] = None) -> Dict[str, Any]
                 "valid_from": valid_from,
                 "last_confirmed_at": last_confirmed_at,
                 "expires_at": None,
+                # memory_plus extensions (spec 7.1): persisted so the retriever's
+                # quality prior and the correction rules survive save/load.
+                "first_seen": _safe_float(raw_fact.get("first_seen"), default=updated_at),
+                "mentions": _safe_int(raw_fact.get("mentions"), 1, min_value=1),
+                "source": _as_text(raw_fact.get("source")).strip().lower() or "stated",
+                "category": _as_text(raw_fact.get("category")).strip().lower(),
+                "previous": _coerce_previous(raw_fact.get("previous")),
+                "pending_alt": _coerce_pending_alt(raw_fact.get("pending_alt")),
             }
 
     return {
@@ -1839,6 +1868,543 @@ def _run_memory_consolidation(redis_obj: Any, settings: Dict[str, Any], *, now_t
             except Exception:
                 logger.exception("[memory_plus_core] consolidation failed for %s", key)
     return {"consolidated_docs": changed_docs, "consolidated_facts": changed_facts, "profile_cards": profile_cards}
+
+
+# ---- Spec 7.6 upgrade: LLM-proposed consolidation with backups + validation ----
+
+_MEMORY_BACKUP_KEEP = 3
+
+
+def _memory_backup_doc(
+    redis_obj: Any,
+    doc_key: str,
+    doc: Dict[str, Any],
+    *,
+    now_ts: Optional[float] = None,
+) -> str:
+    """Snapshot a doc under memory_plus_core:backup:...; keep the newest N."""
+    ts_now = float(now_ts if now_ts is not None else time.time())
+    tail = _as_text(doc_key).strip() or "unknown"
+    if tail.startswith("memory_plus_core:"):
+        tail = tail[len("memory_plus_core:"):]
+    tail = re.sub(r"[^A-Za-z0-9_.-]+", "_", tail)[:120]
+    stamp = time.strftime("%Y%m%d", time.localtime(ts_now))
+    backup_key = f"memory_plus_core:backup:{tail}:{stamp}"
+    snapshot = {
+        "schema_version": _MEMORY_AUX_SCHEMA_VERSION,
+        "source_doc_key": _as_text(doc_key),
+        "backed_up_at": ts_now,
+        "doc": doc,
+    }
+    try:
+        _memory_save_json(redis_obj, backup_key, snapshot)
+        existing = []
+        try:
+            existing = sorted(
+                str(raw_key or "")
+                for raw_key in redis_obj.scan_iter(match=f"memory_plus_core:backup:{tail}:*", count=200)
+            )
+        except Exception:
+            existing = []
+        stale = existing[: -_MEMORY_BACKUP_KEEP] if len(existing) > _MEMORY_BACKUP_KEEP else []
+        stale = [item for item in stale if item != backup_key]
+        if stale:
+            batch = [item for item in stale if item]
+            if batch:
+                redis_obj.delete(*batch)
+    except Exception:
+        logger.exception("[memory_plus_core] backup failed for %s", doc_key)
+    return backup_key
+
+
+_MEMORY_CONSOLIDATION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "merges": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "from_key": {"type": "string"},
+                    "to_key": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["from_key", "to_key"],
+                "additionalProperties": False,
+            },
+        },
+        "rewrites": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string"},
+                    "value": {},
+                    "reason": {"type": "string"},
+                },
+                "required": ["key", "value"],
+                "additionalProperties": False,
+            },
+        },
+        "stale": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["key"],
+                "additionalProperties": False,
+            },
+        },
+        "profile_card": {"type": "string"},
+    },
+    "required": ["merges", "rewrites", "stale"],
+    "additionalProperties": False,
+}
+
+
+def _memory_consolidation_proposal(
+    llm_client: Any,
+    doc: Dict[str, Any],
+    *,
+    profile_card_max_chars: int,
+) -> Optional[Dict[str, Any]]:
+    """Ask the LLM (one structured call) how to tidy one user doc. May return None."""
+    if llm_client is None:
+        return None
+    facts = doc.get("facts") if isinstance(doc.get("facts"), dict) else {}
+    summary_rows = []
+    for key, fact in facts.items():
+        if not isinstance(fact, dict):
+            continue
+        summary_rows.append(
+            {
+                "key": key,
+                "value": value_to_text(fact.get("value"), max_chars=200),
+                "category": _as_text(fact.get("category")).strip(),
+                "confidence": round(_coerce_confidence(fact.get("confidence")), 2),
+                "mentions": _safe_int(fact.get("mentions"), 1, min_value=1),
+                "updated_at": _as_float(fact.get("updated_at"), 0.0),
+            }
+        )
+    if not summary_rows:
+        return None
+    summary_rows.sort(key=lambda row: str(row.get("key") or ""))
+    payload = {
+        "instructions": (
+            "Propose tidy-ups for this person's stored facts. merges: duplicate or near-duplicate keys "
+            "whose values belong together (from_key is removed; its value folds into to_key). rewrites: "
+            "canonical value cleanups for an existing key. stale: facts that are clearly outdated IF they "
+            "are low-confidence or barely mentioned (high-confidence, well-confirmed facts must never be "
+            "flagged stale — merge them instead). profile_card: a short neutral description of who this "
+            "person is, their household, and stable preferences; concrete only, never speculate."
+        ),
+        "facts": summary_rows[:150],
+        "profile_card_max_chars": int(profile_card_max_chars),
+    }
+    proposal = _hydra_llm_json(
+        llm_client=llm_client,
+        system_prompt=(
+            "You propose conservative consolidation edits for a stored personal-memory document. "
+            "Return strict JSON only: {merges:[{from_key,to_key,reason}], rewrites:[{key,value,reason}], "
+            "stale:[{key,reason}], profile_card:\"...\"}. Keys must be taken verbatim from the supplied "
+            "facts list. Never invent keys. Never flag a fact stale if confidence > 0.9 and mentions >= 3. "
+            "If nothing is worth changing, return empty arrays and an empty profile_card."
+        ),
+        schema=_MEMORY_CONSOLIDATION_SCHEMA,
+        payload=payload,
+        max_tokens=1200,
+        temperature=0.1,
+    )
+    if not isinstance(proposal, dict):
+        return None
+    return proposal
+
+
+def _memory_validate_consolidation_proposal(
+    doc: Dict[str, Any],
+    proposal: Any,
+    *,
+    profile_card_max_chars: int,
+) -> Tuple[bool, str, Dict[str, Any]]:
+    """All-or-nothing validation (spec 7.6): any invalid item rejects the proposal."""
+    if not isinstance(proposal, dict):
+        return False, "proposal is not an object", {}
+    facts = doc.get("facts") if isinstance(doc.get("facts"), dict) else {}
+
+    merges = proposal.get("merges") if isinstance(proposal.get("merges"), list) else []
+    rewrites = proposal.get("rewrites") if isinstance(proposal.get("rewrites"), list) else []
+    stale = proposal.get("stale") if isinstance(proposal.get("stale"), list) else []
+    if len(merges) > 40 or len(rewrites) > 40 or len(stale) > 40:
+        return False, "too many proposed changes", {}
+
+    clean_merges = []
+    for item in merges:
+        if not isinstance(item, dict):
+            return False, "invalid merge item", {}
+        from_key = normalize_fact_key(item.get("from_key"))
+        to_key = normalize_fact_key(item.get("to_key"))
+        if not from_key or not to_key:
+            return False, "merge keys missing after normalization", {}
+        if from_key == to_key:
+            return False, f"merge from/to identical ({from_key})", {}
+        if from_key not in facts:
+            return False, f"merge source key not present: {from_key}", {}
+        clean_merges.append({"from_key": from_key, "to_key": to_key})
+
+    clean_rewrites = []
+    for item in rewrites:
+        if not isinstance(item, dict):
+            return False, "invalid rewrite item", {}
+        key = normalize_fact_key(item.get("key"))
+        if not key:
+            return False, "rewrite key missing", {}
+        if key not in facts:
+            return False, f"rewrite key not present: {key}", {}
+        value = _json_safe(item.get("value"))
+        if isinstance(value, str) and len(value) > 1000:
+            return False, f"rewrite value too long for {key}", {}
+        if value is None or value == "" or value == [] or value == {}:
+            return False, f"rewrite value empty for {key}", {}
+        clean_rewrites.append({"key": key, "value": value})
+
+    clean_stale = []
+    for item in stale:
+        if not isinstance(item, dict):
+            return False, "invalid stale item", {}
+        key = normalize_fact_key(item.get("key"))
+        if not key:
+            return False, "stale key missing", {}
+        if key not in facts:
+            return False, f"stale key not present: {key}", {}
+        # High-confidence, well-confirmed facts may never be dropped by a mere flag.
+        fact = facts[key]
+        if _coerce_confidence(fact.get("confidence")) > 0.9 and _safe_int(fact.get("mentions"), 1, min_value=1) >= 3:
+            return False, f"refusing to drop well-confirmed fact: {key}", {}
+        clean_stale.append({"key": key})
+
+    profile_card = _memory_clean_text(proposal.get("profile_card"), max_chars=int(profile_card_max_chars))
+    return True, "ok", {
+        "merges": clean_merges,
+        "rewrites": clean_rewrites,
+        "stale": clean_stale,
+        "profile_card": profile_card,
+    }
+
+
+def _memory_apply_consolidation(
+    doc: Dict[str, Any],
+    validated: Dict[str, Any],
+    *,
+    now_ts: Optional[float] = None,
+) -> Dict[str, int]:
+    ts_now = float(now_ts if now_ts is not None else time.time())
+    facts = doc.get("facts") if isinstance(doc.get("facts"), dict) else {}
+    applied = {"merges": 0, "rewrites": 0, "retired": 0, "profile_card": 0}
+
+    def _retire(fact: Dict[str, Any], key: str, reason: str) -> None:
+        retired = doc.get("retired_facts") if isinstance(doc.get("retired_facts"), list) else []
+        retired.append(
+            {
+                "key": key,
+                "value": fact.get("value"),
+                "confidence": _coerce_confidence(fact.get("confidence")),
+                "evidence": _coerce_evidence(fact.get("evidence")),
+                "valid_from": _as_float(fact.get("valid_from"), _as_float(fact.get("updated_at"), ts_now)),
+                "valid_to": ts_now,
+                "reason": reason,
+            }
+        )
+        doc["retired_facts"] = retired[-100:]
+
+    for merge in validated.get("merges") or []:
+        from_key, to_key = merge["from_key"], merge["to_key"]
+        source_fact = facts.get(from_key)
+        target_fact = facts.get(to_key)
+        if not isinstance(source_fact, dict):
+            continue
+        if not isinstance(target_fact, dict):
+            facts[to_key] = source_fact
+        else:
+            source_updated = _as_float(source_fact.get("updated_at"), 0.0)
+            target_updated = _as_float(target_fact.get("updated_at"), 0.0)
+            winner, loser = (
+                (source_fact, target_fact)
+                if source_updated >= target_updated
+                else (target_fact, source_fact)
+            )
+            if _value_fingerprint(winner.get("value")) != _value_fingerprint(loser.get("value")):
+                previous = winner.get("previous") if isinstance(winner.get("previous"), list) else []
+                previous.append({"value": loser.get("value"), "until": ts_now})
+                winner["previous"] = previous[-3:]
+            merged_conf = max(_coerce_confidence(winner.get("confidence")), _coerce_confidence(loser.get("confidence")))
+            winner["confidence"] = merged_conf
+            winner["mentions"] = max(
+                _safe_int(winner.get("mentions"), 1, min_value=1),
+                _safe_int(loser.get("mentions"), 1, min_value=1),
+            )
+            winner["evidence"] = _memory_string_list(
+                list(_coerce_evidence(winner.get("evidence"))) + list(_coerce_evidence(loser.get("evidence"))),
+                max_items=12,
+                max_chars=160,
+            )
+            winner["updated_at"] = ts_now
+            facts[to_key] = winner
+        facts.pop(from_key, None)
+        applied["merges"] += 1
+
+    for rewrite in validated.get("rewrites") or []:
+        key = rewrite["key"]
+        fact = facts.get(key)
+        if not isinstance(fact, dict):
+            continue
+        old_value = fact.get("value")
+        if _value_fingerprint(old_value) == _value_fingerprint(rewrite["value"]):
+            continue
+        previous = fact.get("previous") if isinstance(fact.get("previous"), list) else []
+        previous.append({"value": old_value, "until": ts_now})
+        fact["previous"] = previous[-3:]
+        fact["value"] = rewrite["value"]
+        fact["updated_at"] = ts_now
+        applied["rewrites"] += 1
+
+    for stale in validated.get("stale") or []:
+        key = stale["key"]
+        fact = facts.get(key)
+        if not isinstance(fact, dict):
+            continue
+        _retire(fact, key, "consolidation_stale")
+        facts.pop(key, None)
+        applied["retired"] += 1
+
+    profile_card = validated.get("profile_card")
+    if profile_card:
+        doc["profile_card"] = {
+            "text": profile_card,
+            "updated_at": ts_now,
+            "source": "consolidation",
+        }
+        applied["profile_card"] = 1
+
+    if any(applied.values()):
+        doc["last_updated"] = ts_now
+    return applied
+
+
+def _memory_plus_consolidation_run(
+    redis_obj: Any,
+    llm_client: Any,
+    settings: Dict[str, Any],
+    *,
+    now_ts: Optional[float] = None,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """Spec 7.6: back up, propose with the LLM, validate, apply (or just report)."""
+    ts_now = float(now_ts if now_ts is not None else time.time())
+    profile_card_max = _as_int(settings.get("profile_card_max_chars"), 600, min_value=200, max_value=2000)
+    summary = {"docs": 0, "proposed": 0, "applied_docs": 0, "merges": 0, "rewrites": 0, "retired": 0, "rejected": 0}
+    try:
+        keys = list(redis_obj.scan_iter(match="memory_plus_core:user:*", count=300))
+    except Exception:
+        keys = []
+    for raw_key in keys:
+        key = _as_text(raw_key).strip()
+        if not key or ":backup:" in key or ":aux:" in key:
+            continue
+        try:
+            doc = load_doc(redis_obj, key, now=ts_now)
+            facts = doc.get("facts") if isinstance(doc.get("facts"), dict) else {}
+            if not facts:
+                continue
+            proposal = _memory_consolidation_proposal(llm_client, doc, profile_card_max_chars=profile_card_max)
+            if proposal is None:
+                continue
+            summary["proposed"] += 1
+            ok, reason, validated = _memory_validate_consolidation_proposal(
+                doc, proposal, profile_card_max_chars=profile_card_max
+            )
+            if not ok:
+                summary["rejected"] += 1
+                logger.warning("[memory_plus_core] consolidation rejected for %s: %s", key, reason)
+                continue
+            backup_key = _memory_backup_doc(redis_obj, key, doc, now_ts=ts_now)
+            applied = _memory_apply_consolidation(doc, validated, now_ts=ts_now)
+            summary["merges"] += applied.get("merges", 0)
+            summary["rewrites"] += applied.get("rewrites", 0)
+            summary["retired"] += applied.get("retired", 0)
+            if any(applied.values()):
+                summary["applied_docs"] += 1
+                if not dry_run:
+                    save_doc(redis_obj, key, doc, now=ts_now)
+            summary["docs"] += 1
+        except Exception:
+            logger.exception("[memory_plus_core] LLM consolidation failed for %s", key)
+    if dry_run:
+        summary["dry_run"] = True
+    return summary
+
+
+# ---- Spec 7.8: import docs from the stock Memory Core (read-only on stock) ----
+
+def _memory_plus_stock_import(
+    redis_obj: Any = None,
+    *,
+    min_confidence: Optional[float] = None,
+    max_docs: int = 2000,
+    dry_run: bool = False,
+) -> Dict[str, Any]:
+    """Copy stock ``mem:*`` memory docs into this core's namespace.
+
+    Facts are merged through the spec 7.4 rules; unchanged values are skipped so
+    re-running the import is idempotent. Stock data is only ever read.
+    """
+    redis_obj = redis_obj if redis_obj is not None else globals().get("redis_client")
+    if redis_obj is None:
+        return {"ok": False, "error": "No Redis client available for the stock import."}
+    ts_now = time.time()
+    min_conf = _as_float(
+        min_confidence, _as_float((_settings(redis_obj) or {}).get("min_confidence"), 0.55), min_value=0.0, max_value=1.0
+    )
+    summary = {
+        "stock_docs": 0,
+        "imported_facts": 0,
+        "merged_facts": 0,
+        "skipped_facts": 0,
+        "identity_keys": 0,
+        "docs": 0,
+    }
+
+    def _import_identity_namespace(stock_prefix: str, ours_prefix: str) -> None:
+        try:
+            rows = list(redis_obj.scan_iter(match=f"{stock_prefix}:*", count=500))
+        except Exception:
+            rows = []
+        for raw_key in rows:
+            key = _as_text(raw_key).strip()
+            if not key:
+                continue
+            tail = key[len(stock_prefix):]
+            ours_key = f"{ours_prefix}{tail}"
+            try:
+                stock_value = _as_text(redis_obj.get(key)).strip()
+                ours_value = _as_text(redis_obj.get(ours_key)).strip()
+            except Exception:
+                continue
+            if stock_value and not ours_value:
+                summary["identity_keys"] += 1
+                if not dry_run:
+                    try:
+                        redis_obj.set(ours_key, stock_value)
+                    except Exception:
+                        summary["identity_keys"] -= 1
+
+    def _copy_fact_if_absent(facts_target: Dict[str, Any], fact_key: str, stock_fact: Dict[str, Any]) -> None:
+        confidence = _coerce_confidence(stock_fact.get("confidence"))
+        facts_target[fact_key] = {
+            "value": _json_safe(stock_fact.get("value")),
+            "confidence": confidence,
+            "evidence": _coerce_evidence(stock_fact.get("evidence")),
+            "ttl_sec": 0,
+            "updated_at": _as_float(stock_fact.get("updated_at"), ts_now, min_value=0.0),
+            "valid_from": _as_float(stock_fact.get("valid_from"), _as_float(stock_fact.get("updated_at"), ts_now), min_value=0.0),
+            "last_confirmed_at": _as_float(stock_fact.get("last_confirmed_at"), _as_float(stock_fact.get("updated_at"), ts_now), min_value=0.0),
+            "expires_at": None,
+            "first_seen": _as_float(stock_fact.get("first_seen"), _as_float(stock_fact.get("updated_at"), ts_now), min_value=0.0),
+            "mentions": _safe_int(stock_fact.get("mentions"), 1, min_value=1),
+            "source": "imported",
+            "category": _as_text(stock_fact.get("category")).strip().lower(),
+            "previous": stock_fact.get("previous") if isinstance(stock_fact.get("previous"), list) else [],
+            "pending_alt": None,
+        }
+
+    if dry_run:
+        summary["dry_run"] = True
+
+    for scope, stock_prefix in (("user", "mem:user"), ("room", "mem:room")):
+        try:
+            keys = list(redis_obj.scan_iter(match=f"{stock_prefix}:*", count=300))
+        except Exception:
+            keys = []
+        for raw_key in keys:
+            if summary["stock_docs"] >= int(max_docs):
+                break
+            stock_key = _as_text(raw_key).strip()
+            if not stock_key or ":backup:" in stock_key:
+                continue
+            try:
+                raw_stock = redis_obj.get(stock_key)
+            except Exception:
+                continue
+            stock_doc = parse_memory_doc(raw_stock, now=ts_now)
+            stock_facts = stock_doc.get("facts") if isinstance(stock_doc.get("facts"), dict) else {}
+            if not stock_facts:
+                continue
+            summary["stock_docs"] += 1
+            ours_key = f"memory_plus_core:{scope}:{stock_key[len(stock_prefix) + 1:]}"
+            if dry_run:
+                for fact_key, stock_fact in stock_facts.items():
+                    if not isinstance(stock_fact, dict):
+                        continue
+                    normalized_key = normalize_fact_key(fact_key)
+                    if not normalized_key:
+                        summary["skipped_facts"] += 1
+                    elif _coerce_confidence(stock_fact.get("confidence")) < min_conf:
+                        summary["skipped_facts"] += 1
+                    else:
+                        summary["imported_facts"] += 1
+                continue
+            ours_doc = load_doc(redis_obj, ours_key, now=ts_now)
+            facts_target = ours_doc.get("facts")
+            if not isinstance(facts_target, dict):
+                facts_target = {}
+                ours_doc["facts"] = facts_target
+            changed = False
+            for fact_key, stock_fact in stock_facts.items():
+                if not isinstance(stock_fact, dict):
+                    continue
+                normalized_key = normalize_fact_key(fact_key)
+                if not normalized_key:
+                    summary["skipped_facts"] += 1
+                    continue
+                confidence = _coerce_confidence(stock_fact.get("confidence"))
+                if confidence < min_conf:
+                    summary["skipped_facts"] += 1
+                    continue
+                existing = facts_target.get(normalized_key)
+                if not isinstance(existing, dict):
+                    _copy_fact_if_absent(facts_target, normalized_key, stock_fact)
+                    summary["imported_facts"] += 1
+                    changed = True
+                    continue
+                if _value_fingerprint(existing.get("value")) == _value_fingerprint(stock_fact.get("value")):
+                    continue  # already imported; keep our newer metadata (idempotent)
+                merged = merge_observation(
+                    ours_doc,
+                    {
+                        "candidate_key": normalized_key,
+                        "value": stock_fact.get("value"),
+                        "confidence": confidence,
+                        "source": "imported",
+                        "evidence": _coerce_evidence(stock_fact.get("evidence")),
+                        "category": _as_text(stock_fact.get("category")),
+                    },
+                    min_confidence=min_conf,
+                    default_ttl_sec=0,
+                    allow_new_keys=True,
+                    now=ts_now,
+                )
+                if merged:
+                    summary["merged_facts"] += 1
+                    changed = True
+            if changed:
+                summary["docs"] += 1
+                save_doc(redis_obj, ours_key, ours_doc, now=ts_now)
+
+    _import_identity_namespace("mem:identity_alias", MEMORY_PLUS_IDENTITY_ALIAS_PREFIX)
+    _import_identity_namespace("mem:identity_name", MEMORY_PLUS_IDENTITY_NAME_PREFIX)
+    return {"ok": True, **summary}
 
 
 def _memory_retrieval_feedback(redis_obj: Any, owner_doc_key: str, result_ids: List[str]) -> None:
@@ -3241,12 +3807,21 @@ def _process_scope(
     if total_len <= 0:
         return {"processed_messages": 0, "updated_facts": 0, "updated_docs": 0}
 
-    cursor_idx = _history_cursor_start(
-        history_key=history_key,
-        total_len=total_len,
-        cursor_state=cursor_state,
-        lookback_limit=lookback_limit,
-    )
+    # Initial backfill (spec 7.3): a scope with no cursor yet starts not at the
+    # very beginning of history but at a bounded window, advanced lookback-sized
+    # steps per cycle until it catches up with the present.
+    if not _as_text(raw_cursor or "").strip():
+        initial_backfill = _as_int(
+            settings.get("initial_backfill_messages"), 500, min_value=0, max_value=5000
+        )
+        cursor_idx = max(0, total_len - initial_backfill)
+    else:
+        cursor_idx = _history_cursor_start(
+            history_key=history_key,
+            total_len=total_len,
+            cursor_state=cursor_state,
+            lookback_limit=lookback_limit,
+        )
 
     if cursor_idx >= total_len:
         _save_history_cursor(
@@ -3527,9 +4102,17 @@ def _run_memory_cycle_once(llm_client: Any, settings: Dict[str, Any]) -> Dict[st
         except Exception:
             last_consolidation = 0.0
         consolidation_stats = {"consolidated_docs": 0, "consolidated_facts": 0, "profile_cards": 0}
-        if cycle_start - last_consolidation >= 86_400:
-            consolidation_stats = _run_memory_consolidation(redis_client, settings, now_ts=cycle_start)
-            stats.update(consolidation_stats)
+        consolidation_llm_stats: Dict[str, Any] = {}
+        consolidation_ran = False
+        if _as_bool(settings.get("enable_consolidation"), True) and cycle_start - last_consolidation >= 86_400:
+            hour = time.localtime(cycle_start).tm_hour
+            wanted_hour = _as_int(settings.get("consolidation_hour"), 3, min_value=0, max_value=23)
+            # Prefer the configured local hour, but never fall more than a day behind.
+            if hour == wanted_hour or cycle_start - last_consolidation >= 172_800:
+                consolidation_ran = True
+                consolidation_stats = _run_memory_consolidation(redis_client, settings, now_ts=cycle_start)
+                stats.update(consolidation_stats)
+                consolidation_llm_stats = _memory_plus_consolidation_run(redis_client, llm_client, settings, now_ts=cycle_start)
         finished_at = time.time()
         try:
             run_count = int(float(redis_client.hget(stats_key, "run_count") or 0)) + 1
@@ -3548,10 +4131,11 @@ def _run_memory_cycle_once(llm_client: Any, settings: Dict[str, Any]) -> Dict[st
                 "processed_messages": str(stats.get("processed_messages") or 0),
                 "updated_facts": str(stats.get("updated_facts") or 0),
                 "updated_docs": str(stats.get("updated_docs") or 0),
-                "last_consolidation_ts": str(cycle_start if cycle_start - last_consolidation >= 86_400 else last_consolidation),
+                "last_consolidation_ts": str(cycle_start if consolidation_ran else last_consolidation),
                 "consolidated_docs": str(stats.get("consolidated_docs") or 0),
                 "consolidated_facts": str(stats.get("consolidated_facts") or 0),
                 "profile_cards": str(stats.get("profile_cards") or 0),
+                "last_consolidation_summary": json.dumps(consolidation_llm_stats, ensure_ascii=False, sort_keys=True),
             },
         )
         return {"ok": True, **stats}
