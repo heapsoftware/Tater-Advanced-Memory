@@ -13,6 +13,7 @@ import hashlib
 import importlib.util
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -3885,6 +3886,667 @@ def _setting_float(settings: Dict[str, Any], key: str, default: float, *, min_va
     if max_value is not None and value > max_value:
         value = max_value
     return value
+
+
+# ============================================================================
+# Pseudo-semantic lexical retrieval (spec section 6)
+# Pure scoring machinery with no I/O. Callers go through get_retriever() so an
+# embedding-backed retriever could replace it later (spec 6.9).
+# ============================================================================
+
+_BM25_K1 = 1.2
+_BM25_B = 0.75
+
+# Final score weights (spec 6.5)
+W_BM25 = 0.35
+W_TRIGRAM = 0.15
+W_CONCEPT = 0.25
+W_INTENT = 0.10
+W_QUALITY = 0.15
+
+# Widening threshold before falling back to all-doc scoring (spec 6.10)
+_FALLBACK_CANDIDATE_MIN = 6
+
+# Absolute minimum score for a non-anchor fact to be injected (spec 6.7)
+MIN_SCORE = 0.12
+
+# Anchors: identity & stable context considered first (spec 6.7)
+_ANCHOR_KEYS = frozenset(
+    {
+        "name", "full_name", "nickname", "preferred_name", "pronouns", "timezone",
+        "languages_spoken", "occupation", "job_title", "employer", "workplace",
+        "dietary_preferences", "diet", "vegetarian", "vegan", "food_allergies",
+        "allergies", "pet_names", "pet_name", "dog_name", "cat_name", "pets",
+        "wife_name", "husband_name", "partner_name", "spouse_name", "children_names",
+        "kids_names", "family_members", "home_city", "city", "country",
+    }
+)
+_ANCHOR_CATEGORIES = frozenset({"family_background", "demographic_information"})
+ANCHOR_MAX_FACTS = 4
+
+# MMR diversity for selection (spec 6.7)
+_MMR_LAMBDA = 0.75
+
+_STOPWORDS = frozenset(
+    """
+    a an the and or but if then than that this these those there here what which who whom whose
+    is are was were be been being am do does did doing done have has had having will would can
+    could should shall may might must of in on at to for from by with about into over after
+    before between during through under above below up down out off again further once not no
+    nor too very just also only own same so some such now new other another any both each few
+    more most all either neither little less least my mine me myself we us our ours ourselves i
+    you your yours yourself yourselves he him his she her hers it its they them their theirs
+    please thanks thank hey hi hello okay ok yeah yep yep uh um er ah tater buddy assistant bot
+    would could gonna wanna gotta let lets make made get got getting keep kept know known see
+    seen say said telling told way thing things stuff kind sort type lot bit really actually
+    probably maybe maybe perhaps something anything nothing everything someone anyone everyone
+    when where why how what i'd i'll i'm it's that's don't doesn't didn't can't won't
+    """.split()
+)
+# Also match the apostrophe forms stripped of the apostrophe.
+_STOPWORDS |= frozenset(word.replace("'", "") for word in list(_STOPWORDS))
+
+_SUFFIXES_RULES = (
+    # (suffix, replacement, min_stem_len, undouble)
+    ("sses", "ss", 3, False),
+    ("ies", "y", 3, False),
+    ("ing", "", 3, True),
+    ("ment", "", 3, False),
+    ("ness", "", 3, False),
+    ("est", "", 3, False),
+    ("er", "", 3, False),
+    ("ly", "", 3, False),
+    ("ed", "", 3, True),
+    ("s", "", 3, False),
+)
+
+# Concept map: token -> concept group (spec 6.4). Editable module literal.
+CONCEPT_GROUPS = {
+    "food": ("food", "foods", "meal", "meals", "eat", "eating", "dish", "cuisine", "snack", "snacks", "lunch", "breakfast", "hungry", "supper", "thai", "curry", "ramen", "sushi", "pho", "noodles", "pasta", "italian", "indian", "mexican", "chinese", "japanese", "korean", "tacos", "pizza", "burger", "burgers", "stir_fry", "spicy", "favorite_food", "favorite_foods"),
+    "cooking": ("cook", "cooking", "recipe", "recipes", "bake", "baking", "grill", "dinner", "kitchen", "meal_prep", "make_food", "chef"),
+    "diet": ("vegetarian", "vegan", "diet", "dietary", "allergy", "allergies", "gluten", "lactose", "keto", "pescatarian", "intolerant"),
+    "drink": ("drink", "drinks", "drinking", "beverage", "juice", "soda", "water", "wine", "beer", "cocktail", "alcohol", "tea", "chai"),
+    "coffee": ("coffee", "espresso", "latte", "cappuccino", "caffeine", "brew", "mocha", "americano"),
+    "music": ("music", "song", "songs", "artist", "artists", "album", "band", "playlist", "listen", "listening", "track", "genre", "spotify"),
+    "audio": ("volume", "loud", "quiet", "speaker", "speakers", "sound", "soundtrack", "audio", "turn_up", "turn_down", "mute"),
+    "video": ("movie", "movies", "film", "show", "shows", "series", "episode", "documentary", "subtitle", "watch", "watching", "cinema", "tv"),
+    "streaming": ("netflix", "stream", "streaming", "youtube", "prime_video", "disney", "hulu", "cast", "casting"),
+    "pets": ("pet", "pets", "dog", "dogs", "cat", "cats", "puppy", "kitten", "bird", "fish", "walk_the_dog", "dog_food"),
+    "family": ("family", "wife", "husband", "spouse", "partner", "son", "daughter", "kid", "kids", "child", "children", "mom", "mother", "dad", "father", "sister", "brother", "grandma", "grandpa", "grandmother", "grandfather", "aunt", "uncle", "nephew", "niece", "cousin", "inlaws", "in_laws"),
+    "friends": ("friend", "friends", "buddy", "pal", "mate", "roommate", "neighbor", "neighbours", "neighborhood"),
+    "work": ("work", "job", "jobs", "occupation", "occupations", "engineer", "developer", "career", "startup", "robotics", "office", "boss", "manager", "client", "meeting", "meetings", "coworker", "colleague", "salary", "paycheck", "career", "workday", "standup"),
+    "schedule": ("schedule", "calendar", "appointment", "appointments", "meeting_time", "availability", "availability_time", "busy", "free_time", "reschedule", "morning_standup"),
+    "school": ("school", "class", "classes", "study", "studying", "student", "teacher", "professor", "exam", "exams", "homework", "assignment", "semester", "university", "college"),
+    "sleep": ("sleep", "sleeping", "asleep", "nap", "bedtime", "tired", "insomnia", "rest", "sleep_schedule", "sleepy"),
+    "wake": ("wake", "waking", "wake_up", "alarm", "alarms", "morning_routine", "sunrise", "early"),
+    "evening": ("evening", "nighttime", "tonight", "dusk", "sunset", "late_night", "night"),
+    "morning": ("morning", "dawn", "am_routine", "breakfast_time", "daybreak"),
+    "routine": ("routine", "daily_routine", "habit", "habits", "usually", "typically", "every_day", "weekly", "regularly", "ritual"),
+    "home": ("home", "house", "apartment", "flat", "room", "rooms", "bedroom", "kitchen_space", "garage", "basement", "attic", "living_room", "den"),
+    "lights": ("light", "lights", "lamp", "lamps", "dim", "brightness", "chandelier", "torchiere", "pendant", "ceiling_light"),
+    "climate": ("thermostat", "temperature", "heating", "heat", "ac", "cooling", "hvac", "humidity", "furnace", "cold", "warm", "degrees", "draft"),
+    "blinds": ("blinds", "curtain", "curtains", "shade", "shades", "cover", "window", "shutter"),
+    "fans": ("fan", "fans", "ceiling_fan", "breeze", "ventilator", "ventilation"),
+    "security": ("lock", "locks", "locked", "unlock", "doorbell", "camera", "cameras", "alarm_system", "security", "sensor", "sensors", "motion"),
+    "garage": ("garage", "garage_door", "opener", "driveway", "carport"),
+    "weather": ("weather", "forecast", "rain", "snow", "storm", "sunny", "cloudy", "wind", "windy", "temperature_outside", "umbrella"),
+    "outdoors": ("outdoors", "garden", "gardening", "yard", "patio", "deck", "balcony", "camping", "hike", "hiking", "trail", "beach", "picnic"),
+    "travel": ("travel", "trip", "vacation", "flight", "airport", "hotel", "holiday", "getaway", "roadtrip", "cruise"),
+    "commute": ("commute", "drive", "driving", "car", "traffic", "bike", "biking", "transit", "bus", "train", "subway", "walk", "walking", "rideshare"),
+    "exercise": ("exercise", "workout", "gym", "fitness", "lift", "lifting", "weights", "run", "running", "jog", "jogging", "yoga", "stretching", "cardio", "treadmill", "cycling", "swim", "swimming"),
+    "health": ("health", "sick", "illness", "doctor", "dentist", "medicine", "medication", "pill", "wellness", "symptoms", "feel_better", "sore_throat"),
+    "sleep_health": ("vitamins", "supplements", "hydrated", "hydration", "wellness"),
+    "shopping": ("shopping", "shop", "buy", "bought", "purchase", "order", "ordered", "amazon", "store", "mall", "boutique", "cart"),
+    "money": ("money", "budget", "bill", "bills", "expense", "expenses", "pay", "payment", "invoice", "bank", "banking", "finance", "loan", "mortgage", "tax", "taxes", "refund", "receipt"),
+    "groceries": ("groceries", "grocery", "grocery_list", "market", "supermarket", "produce", "veggies", "vegetables", "fruits"),
+    "hobbies": ("hobby", "hobbies", "craft", "crafts", "painting", "drawing", "photography", "knitting", "woodworking", "pottery", "leathercraft", "calligraphy"),
+    "games": ("game", "games", "gaming", "gamer", "videogame", "video_games", "console", "playstation", "playdate", "xbox", "nintendo", "switch", "steam", "arcade", "board_game", "board_games", "puzzle", "puzzles"),
+    "reading": ("book", "books", "read", "reading", "novel", "novels", "audiobook", "audiobooks", "kindle", "library", "author", "comics", "manga", "poetry"),
+    "projects": ("project", "projects", "side_project", "prototype", "build", "building", "diy", "workbench", "workshop", "blueprint"),
+    "coding": ("code", "coding", "program", "programming", "software", "developer", "python", "javascript", "rust", "golang", "git", "github", "repo", "repository", "bug", "bugfix", "compile", "script", "scripts", "terminal", "apis", "docker", "linux", "sql", "database"),
+    "writing": ("write", "writing", "blog", "journal", "notebook", "essay", "notes", "poem", "draft"),
+    "tools": ("tool", "tools", "drill", "saw", "screwdriver", "toolbox", "hammer", "wrench", "pliers", "multitool"),
+    "plants": ("plant", "plants", "garden_plants", "gardenia", "succulent", "succulents", "orchid", "orchids", "bonsai", "houseplant", "houseplants", "repot", "herbs"),
+    "animals": ("animal", "animals", "wildlife", "birds", "bee", "beekeeping", "chickens", "farm"),
+    "cars": ("car", "cars", "vehicle", "driving_car", "sedan", "truck", "suv", "electric_vehicle", "ev", "oil_change", "tire", "tires", "car_wash"),
+    "clothes": ("clothes", "clothing", "shirt", "pants", "jacket", "coat", "shoes", "boots", "laundry", "wardrobe", "outfit", "socks", "sweater", "hoodie"),
+    "movies_pref": ("favorite_movie", "favorite_movies", "actors", "actor", "director", "directors", "romcom", "thriller", "horror", "comedy", "animated", "anime", "western", "scifi", "fantasy"),
+    "party": ("party", "parties", "celebrate", "celebration", "birthday", "anniversary", "cake", "wedding", "barbecue", "guests", "hosts"),
+    "gifts": ("gift", "gifts", "present", "presents", "wishlist", "surprise", "gifting"),
+    "phone": ("phone", "smartphone", "mobile", "ring", "ringtone", "vibrate", "call", "called", "text_message", "sms", "voice_note", "voicemail", "caller"),
+    "computer": ("computer", "laptop", "desktop", "pc", "monitor", "keyboard", "mouse", "printer", "scanner", "webcam", "headphones", "earbuds"),
+    "internet": ("wifi", "internet", "router", "ethernet", "network", "networking", "bandwidth", "modem", "vpn", "ssid", "connection", "streaming_quality"),
+    "reminders": ("remind", "remind_me", "reminder", "reminders", "remember_to", "todo", "to_do", "task_list", "checklist", "don't_forget", "dont_forget"),
+    "events": ("event", "events", "conference", "concert", "wedding_date", "meetup", "meetups", "festival", "gathering", "reunion", "seminar", "workshop_event"),
+    "holidays": ("holiday", "holidays", "thanksgiving", "christmas", "halloween", "new_year", "easter", "hanukkah", "festive", "festivities"),
+    "music_instruments": ("guitar", "piano", "violin", "drum", "drums", "instrument", "instruments", "synthesizer", "amplifier", "bass_guitar"),
+    "podcasts_radio": ("podcast", "podcasts", "radio", "station", "broadcast", "live_show", "talk_show", "news_show"),
+    "sports": ("sport", "sports", "football", "soccer", "basketball", "baseball", "tennis", "hockey", "golf", "bowling", "pickleball", "tournament", "playoffs", "match"),
+    "motorsport": ("bike_riding", "trail_running", "motocross", "racing", "cycling_route"),
+    "cooking_shows": ("culinary", "baking_show", "cooking_show", "food_network", "chef_show"),
+    "art_museums": ("art", "arts", "museum", "museums", "gallery", "exhibit", "exhibition", "sculpture", "statue", "portrait"),
+    "history": ("history", "historical", "museum", "biography", "heritage", "documentary_history", "archive"),
+    "science": ("science", "space", "astronomy", "physics", "chemistry", "biology", "telescope", "planetarium", "nasa", "rocket", "observatory"),
+    "math": ("math", "mathematics", "algebra", "geometry", "calculus", "statistics", "puzzle_math"),
+    "languages": ("language", "languages", "spanish", "french", "german", "japanese", "chinese", "italian", "korean", "translator", "vocab", "grammar"),
+    "religion": ("religion", "religious", "church", "temple", "mosque", "prayer", "faith", "worship", "sacred"),
+    "politics": ("politics", "political", "election", "government", "policy", "senator", "vote", "voting", "referendum", "congress"),
+    "philosophy": ("philosophy", "ethics", "moral", "morals", "logic", "wisdom", "metaphysics", "stoicism", "virtue"),
+    "news": ("news", "newspaper", "headline", "headlines", "current_events", "breaking_news", "newsletter", "press"),
+    "finance_planning": ("retirement", "investment", "investments", "stocks", "savings", "401k", "portfolio", "interest_rate", "brokerage", "financial_planner"),
+    "charity": ("charity", "donation", "donate", "volunteer", "volunteering", "fundraiser", "nonprofit", "shelter_volunteer"),
+    "kids_activities": ("playground", "daycare", "babysitter", "babysitting", "toddler", "lego", "legos", "cartoon", "playdate_kids", "school_run"),
+    "pets_health": ("vet", "veterinarian", "grooming", "fur", "leash", "kennel", "litter", "pet_sitter", "flea"),
+    "weather_gear": ("raincoat", "umbrella_stand", "boots_wet", "scarf", "mittens", "sunglasses"),
+    "home_decor": ("decor", "furniture", "couch", "sofa", "table", "chair", "rug", "rug_carpet", "bookshelf", "wall_art", "paint_color", "curtain_rods"),
+    "cleaning": ("clean", "cleaning", "vacuum", "mop", "laundry_room", "dishes", "declutter", "duster", "tidy", "chores"),
+    "repair": ("repair", "fixed", "broken", "plumber", "plumbing", "electrician", "handyman", "leak", "leaky", "patch", "warranty"),
+    "appliances": ("dishwasher", "washing_machine", "dryer", "oven", "stove", "microwave", "toaster", " refrigerator", "fridge", "kettle", "air_fryer"),
+    "energy": ("energy", "solar", "battery_level", "generator", "electricity", "power_outage", "utility_bill", "meter"),
+    "time": ("time", "clock", "hour", "hours", "minute", "minutes", "now", "today", "tomorrow", "yesterday", "weekend", "weekday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"),
+    "seasons": ("summer", "winter", "spring", "autumn", "fall_season", "seasonal"),
+    "announcements": ("announce", "announcement", "broadcast_to_household", "intercom", "speak_to_everyone", "tts", "message_everyone"),
+    "voice_prefs": ("voice", "microphone", "speech", "say", "speak", "listen_to_me", "wake_word", "mute_microphone", "assistant_voice"),
+    "notifications": ("notification", "notifications", "alert", "alerts", "ping", "chime", "ding", "buzzer"),
+    "privacy": ("privacy", "private", "confidential", "secret", "discreet", "dont_share", "keep_private", "personal_data", "tracking"),
+    "memories": ("memory", "remember", "recall", "forget", "memories", "know_about_me", "past_conversations", "history_with_me"),
+    "preferences_general": ("favorite", "favorites", "prefer", "preference", "preferences", "like", "likes", "love", "loves", "hate", "hates", "dislike", "dislikes", "interests", "hobby_pref", "enjoys"),
+    "assistant_behavior": ("automate", "automation", "shortcut", "shortcuts", "routine_automation", "trigger", "triggered", "if_this_then_that", "workflow", "script_automation", "macro", "timer", "countdown", "stopwatch"),
+}
+
+# Related concept groups that should count together during overlap scoring.
+CONCEPT_FAMILIES = {
+    "food_cooking": ("food", "cooking", "groceries", "diet"),
+    "home_automation": ("home", "lights", "climate", "blinds", "fans", "security", "garage", "appliances"),
+    "media": ("music", "audio", "video", "streaming", "music_instruments", "podcasts_radio"),
+    "people": ("family", "friends"),
+    "work_school": ("work", "school", "schedule", "projects"),
+    "activity": ("exercise", "health", "outdoors", "sports"),
+    "money": ("money", "shopping", "finance_planning", "energy"),
+}
+_CONCEPT_FAMILY_OF = {
+    _concept: _family
+    for _family, _concepts in CONCEPT_FAMILIES.items()
+    for _concept in _concepts
+}
+_FAMILY_CONCEPT_SETS = {family: frozenset(concepts) for family, concepts in CONCEPT_FAMILIES.items()}
+
+_CONCEPT_TOKEN_MAP_RAW: Dict[str, set] = {}
+for _concept, _words in CONCEPT_GROUPS.items():
+    for _word in _words:
+        _CONCEPT_TOKEN_MAP_RAW.setdefault(re.sub(r"\s+", "_", _word.strip().lower()), set()).add(_concept)
+_CONCEPT_TOKEN_MAP: Dict[str, frozenset] = {
+    token: frozenset(ids) for token, ids in _CONCEPT_TOKEN_MAP_RAW.items()
+}
+del _CONCEPT_TOKEN_MAP_RAW
+
+# Intent category boosts (spec 6.5 signal 5)
+_INTENT_RULES = (
+    ("preferences", re.compile(r"recommend|suggest|what should i|ideas|favorite|favourite|like to|prefer|do i like|do you know what i")),
+    ("routine", re.compile(r"remind|when|schedule|usually|typically|every day|often|routine|habit|daily|weekly")),
+    ("people", re.compile(r"who is|who's|my (wife|husband|son|daughter|kid|kids|mom|dad|mother|father|sister|brother|friend|dog|cat)|tell me about my")),
+    ("music", re.compile(r"play|put on|listen|music|song|playlist|artist|album")),
+    ("home", re.compile(r"turn (on|off)|set |dim|lights?|thermostat|temperature|blinds?|fan|garage|lock|door|camera|room temp|make it")),
+    ("food", re.compile(r"cook|dinner|lunch|breakfast|eat|food|recipe|hungry|order|restaurant|takeout|groceries")),
+    ("work", re.compile(r"work|meeting|boss|client|project|deadline|standup|office")),
+    ("events", re.compile(r"what happened|last week|yesterday|recently|remember when|last time")),
+)
+_INTENT_CATEGORIES = {
+    "preferences": ("preferences", "lifestyle_choices", "personality_traits", "food_drink", "interests"),
+    "routine": ("behavioral_patterns", "lifestyle_choices", "routine", "habits"),
+    "people": ("family_background", "people", "pets"),
+    "music": ("interests", "music"),
+    "home": ("home_automation", "home", "habits", "constraints_and_policies"),
+    "food": ("preferences", "lifestyle_choices", "food_drink"),
+    "work": ("demographic_information", "goals_and_aspirations", "work"),
+    "events": ("life_experiences", "events"),
+}
+_INTENT_BOOST = 0.25
+
+
+def _normalize_retriever_text(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = text.replace("_", " ")
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return text.strip()
+
+
+def tokenize(text: Any) -> List[str]:
+    """Tokenizer: lowercase, alphanumeric split, underscore as space, keep digits."""
+    return [t for t in _normalize_retriever_text(text).split() if t]
+
+
+def is_stopword(token: str) -> bool:
+    return token.strip().lower() in _STOPWORDS
+
+
+def content_tokens(text: Any) -> List[str]:
+    return [t for t in tokenize(text) if not is_stopword(t)]
+
+
+def stem(token: str) -> str:
+    word = token.lower()
+    if len(word) <= 3:
+        return word
+    if word.endswith("ies") and len(word) > 4:
+        return word[:-3] + "y"
+    if word.endswith("sses") and len(word) > 5:
+        return word[:-2]
+    for suffix, replacement, min_len, undouble in _SUFFIXES_RULES:
+        if word.endswith(suffix) and len(word) - len(suffix) >= min_len:
+            base = word[: len(word) - len(suffix)] + replacement
+            if undouble and len(base) >= 2 and base[-1] == base[-2]:
+                base = base[:-1]
+            if len(base) >= 3:
+                return base
+    return word
+
+
+def concepts_for_token(token: str) -> frozenset:
+    concepts = _CONCEPT_TOKEN_MAP.get(token)
+    if concepts:
+        return concepts
+    return _CONCEPT_TOKEN_MAP.get(stem(token), frozenset())
+
+
+def text_ngrams(text: str, size: int = 3) -> set:
+    padded = f"  {text}  "
+    padded = re.sub(r"\s+", " ", padded)
+    if len(padded) < size:
+        return {padded}
+    return {padded[i : i + size] for i in range(len(padded) - size + 1)}
+
+
+def trigram_dice(a: str, b: str) -> float:
+    grams_a, grams_b = text_ngrams(a), text_ngrams(b)
+    if not grams_a or not grams_b:
+        return 0.0
+    shared = len(grams_a & grams_b)
+    return (2.0 * shared) / (len(grams_a) + len(grams_b))
+
+
+class RetrieverDoc:
+    __slots__ = ("id", "kind", "key", "text", "category", "confidence", "mentions", "ts", "source", "tokens", "stems", "concepts", "grams")
+
+    def __init__(self, id: str, kind: str, key: str, text: str, category: str = "",
+                 confidence: float = 0.5, mentions: int = 1, ts: float = 0.0, source: str = "stated"):
+        self.id = id
+        self.kind = kind
+        self.key = key or ""
+        self.text = _normalize_retriever_text(text)
+        self.category = _normalize_retriever_text(category).replace(" ", "_")
+        self.confidence = max(0.0, min(1.0, float(confidence or 0.0)))
+        self.mentions = max(1, int(mentions or 1))
+        self.ts = float(ts or 0.0)
+        self.source = source or "stated"
+        key_tokens = content_tokens(self.key.replace("_", " "))
+        value_tokens = content_tokens(self.text)
+        self.tokens = key_tokens + key_tokens + value_tokens  # key field weight x2
+        self.stems = [stem(t) for t in self.tokens]
+        concepts: set = set()
+        for tok in self.tokens:
+            concepts |= concepts_for_token(tok)
+        self.concepts = frozenset(concepts)
+        self.grams = text_ngrams(self.text)
+
+    def quality(self, now: float, half_life_days: float) -> float:
+        conf_component = 0.6 * self.confidence + 0.4 * (1.0 if self.source == "stated" else 0.55)
+        mentions_component = min(1.0, 0.35 * (math.log1p(max(0, self.mentions - 1)) / math.log(10)))
+        age_days = max(0.0, (max(now, self.ts) - self.ts) / 86_400.0) if self.ts else 30.0
+        hl = max(0.25, float(half_life_days or 30.0))
+        recency = 0.5 ** (age_days / hl)
+        return 0.55 * conf_component + 0.20 * mentions_component + 0.25 * recency
+
+
+class RetrieverConfig:
+    __slots__ = ("fact_half_life_days", "episode_half_life_days", "synonym_groups")
+
+    def __init__(self, fact_half_life_days: float = 120.0, episode_half_life_days: float = 14.0,
+                 synonym_groups: Optional[List[List[str]]] = None):
+        self.fact_half_life_days = float(fact_half_life_days)
+        self.episode_half_life_days = float(episode_half_life_days)
+        self.synonym_groups = synonym_groups or []
+
+
+class RetrieverIndex:
+    __slots__ = (
+        "docs", "postings", "doc_len", "avg_len", "doc_count", "signature",
+        "concept_df", "term_df",
+    )
+
+    def __init__(self, docs: List[RetrieverDoc], signature: Any):
+        self.docs = docs
+        self.signature = signature
+        self.postings: Dict[str, List[Tuple[int, int]]] = {}
+        self.doc_len: List[int] = []
+        concept_df: Dict[str, int] = {}
+        term_df: Dict[str, int] = {}
+        for _idx, doc in enumerate(docs):
+            counts: Dict[str, int] = {}
+            for token in doc.stems:
+                counts[token] = counts.get(token, 0) + 1
+            length = sum(counts.values()) or 1
+            self.doc_len.append(length)
+            for token, count in counts.items():
+                self.postings.setdefault(token, []).append((_idx, count))
+                term_df[token] = term_df.get(token, 0) + 1
+            for concept in doc.concepts:
+                concept_df[concept] = concept_df.get(concept, 0) + 1
+        self.avg_len = (sum(self.doc_len) / len(self.doc_len)) if self.doc_len else 1.0
+        self.doc_count = len(docs)
+        self.concept_df = concept_df
+        self.term_df = term_df
+
+
+class LexicalRetriever:
+    """BM25 + trigram + concept-map + PRF + intent + quality scorer (spec 6.5)."""
+
+    def __init__(self, config: Optional[RetrieverConfig] = None):
+        self.config = config or RetrieverConfig()
+        self._custom_token_map: Dict[str, frozenset] = {}
+        for group_id, words in _parse_custom_synonym_groups(self.config.synonym_groups):
+            for word in words:
+                self._custom_token_map[word] = self._custom_token_map.get(word, frozenset()) | {group_id}
+
+    def _concepts(self, token: str) -> frozenset:
+        return (
+            concepts_for_token(token)
+            | self._custom_token_map.get(token, frozenset())
+            | self._custom_token_map.get(stem(token), frozenset())
+        )
+
+    def build_index(self, docs: List[RetrieverDoc]) -> RetrieverIndex:
+        return RetrieverIndex(docs, signature=(len(docs),))
+
+    def rank(self, query: Dict[str, Any], index: RetrieverIndex, k: int = 10) -> List[Dict[str, Any]]:
+        text = str(query.get("text") or "")
+        q_tokens = content_tokens(text)
+        context_text = str(query.get("context_text") or "")
+        now = float(query.get("now") or time.time())
+        room = _normalize_retriever_text(query.get("room") or "").replace(" ", "_")
+        hour = int(query.get("hour", time.localtime(now).tm_hour))
+        is_weekend = bool(query.get("is_weekend", time.localtime(now).tm_wday >= 5))
+
+        # Short/ambiguous utterances (spec 6.6): fold in context tokens.
+        extra_tokens: List[str] = []
+        if len(q_tokens) < 3:
+            extra_tokens.extend(content_tokens(context_text))
+            hour_bucket = "morning" if 5 <= hour < 12 else ("afternoon" if 12 <= hour < 17 else ("evening" if 17 <= hour < 22 else "night" if 22 <= hour <= 23 else "night"))
+            extra_tokens.append(hour_bucket)
+            extra_tokens.append("weekend" if is_weekend else "weekday")
+            if room:
+                extra_tokens.extend(content_tokens(room.replace("_", " ")))
+        weighted_query: List[Tuple[str, float]] = [(t, 1.0) for t in q_tokens]
+        weighted_query += [(t, 0.7) for t in extra_tokens]
+
+        # Concept expansion at 0.5 (spec 6.5).
+        q_text = " ".join(q_tokens)
+        q_grams = text_ngrams(q_text)
+        seen_terms = {t for t, _ in weighted_query}
+        for token, weight in list(weighted_query):
+            for concept in self._concepts(token):
+                for word in CONCEPT_GROUPS.get(concept, ()):
+                    if word not in seen_terms:
+                        seen_terms.add(word)
+                        weighted_query.append((word, 0.5 * weight))
+
+        scored = self._score(index, weighted_query, now, room, q_tokens=q_tokens, q_text=q_text, q_grams=q_grams)
+        scored = self._pseudo_relevance_feedback(index, weighted_query, scored, now, room)
+        scored.sort(key=lambda item: item["score"], reverse=True)
+        return scored[: max(1, int(k))]
+
+    # ---- internal scoring ----
+
+    def _score(
+        self,
+        index: RetrieverIndex,
+        weighted_query: List[Tuple[str, float]],
+        now: float,
+        room: str,
+        q_tokens: Optional[List[str]] = None,
+        q_text: Optional[str] = None,
+        q_grams: Optional[set] = None,
+    ) -> List[Dict[str, Any]]:
+        if not index.doc_count:
+            return []
+        avg_len = index.avg_len or 1.0
+        if q_tokens is None:
+            q_tokens = [token for token, w in weighted_query if w > 0.55]
+        if q_text is None:
+            q_text = " ".join(q_tokens) or (weighted_query[0][0] if weighted_query else "")
+        if q_grams is None:
+            q_grams = text_ngrams(q_text)
+
+        # IDF over candidate expansion terms.
+        idf: Dict[str, float] = {}
+        for term, _w in weighted_query:
+            if term in idf:
+                continue
+            df = len(index.postings.get(term, ()))
+            idf[term] = math.log(1.0 + (index.doc_count - df + 0.5) / (df + 0.5))
+
+        partial: Dict[int, float] = {}
+        matched_terms: Dict[int, set] = {}
+        for term, weight in weighted_query:
+            idf_term = idf.get(term)
+            if idf_term is None or idf_term <= 0:
+                continue
+            for idx, tf in index.postings.get(term, ()):
+                length = index.doc_len[idx] or 1
+                tf_norm = (tf * (weight)) * (_BM25_K1 + 1.0)
+                denom = tf + _BM25_K1 * (1.0 - _BM25_B + _BM25_B * (length / avg_len))
+                partial[idx] = partial.get(idx, 0.0) + idf_term * tf_norm / denom
+                matched_terms.setdefault(idx, set()).add(term)
+
+        max_bm25 = max(partial.values()) if partial else 1.0
+
+        candidates: List[int] = list(partial.keys())
+        # Fallback (spec 6.10): paraphrase-like queries with no lexical overlap
+        # must still score via concept/trigram/intent, so widen to all docs.
+        if len(candidates) < _FALLBACK_CANDIDATE_MIN:
+            candidates = list(range(index.doc_count))
+
+        query_concepts: Dict[str, float] = {}
+        query_families: Dict[str, float] = {}
+        for token, weight in weighted_query:
+            if weight <= 0.55:
+                continue
+            for concept in self._concepts(token):
+                query_concepts[concept] = max(query_concepts.get(concept, 0.0), weight)
+                family = _CONCEPT_FAMILY_OF.get(concept, concept)
+                query_families[family] = max(query_families.get(family, 0.0), weight)
+        concept_boost = max(1.0, sum(query_families.values()) or 1.0)
+
+        results: List[Dict[str, Any]] = []
+        for idx in candidates:
+            doc = index.docs[idx]
+            bm25 = partial.get(idx, 0.0)
+            bm25_norm = (bm25 / max_bm25) if max_bm25 > 0 else 0.0
+
+            grams_doc = doc.grams
+            shared = len(q_grams & grams_doc)
+            tri = (2.0 * shared) / (len(q_grams) + len(grams_doc)) if (q_grams and grams_doc) else 0.0
+
+            overlap = 0.0
+            for family, weight in query_families.items():
+                family_set = _FAMILY_CONCEPT_SETS.get(family, frozenset((family,)))
+                if doc.concepts & family_set:
+                    best_idf = max(idf_concept(index, c) for c in (doc.concepts & family_set))
+                    overlap += min(1.0, weight) * best_idf
+            concept_norm = min(1.0, overlap / concept_boost) if concept_boost else 0.0
+
+            intent = _intent_boost(q_text, doc)
+
+            quality = doc.quality(now, self.config.fact_half_life_days if doc.kind == "fact" else self.config.episode_half_life_days)
+            if room and room in doc.text:
+                quality = min(1.0, quality + 0.05)
+
+            score = (
+                W_BM25 * bm25_norm
+                + W_TRIGRAM * tri
+                + W_CONCEPT * concept_norm
+                + W_INTENT * intent
+                + W_QUALITY * quality
+            )
+            results.append(
+                {
+                    "doc": doc,
+                    "score": score,
+                    "breakdown": {
+                        "bm25": round(bm25_norm, 4),
+                        "trigram": round(tri, 4),
+                        "concept": round(concept_norm, 4),
+                        "intent": round(intent, 4),
+                        "quality": round(quality, 4),
+                    },
+                    "matched_terms": sorted(matched_terms.get(idx, ()))[:8],
+                }
+            )
+        return results
+
+    def _pseudo_relevance_feedback(self, index: RetrieverIndex, weighted_query: List[Tuple[str, float]], scored: List[Dict[str, Any]], now: float, room: str) -> List[Dict[str, Any]]:
+        """Spec 6.5 signal 4: expand with top TF-IDF terms of top-3 first-pass docs."""
+        if not scored:
+            return scored
+        top_docs = [item["doc"] for item in sorted(scored, key=lambda i: i["score"], reverse=True)[:3]]
+        query_terms = {term for term, _w in weighted_query}
+        tf: Dict[str, int] = {}
+        df_docs = 0
+        for doc in top_docs:
+            df_docs += 1
+            for token in doc.stems:
+                tf[token] = tf.get(token, 0) + 1
+        ranked_terms = sorted(tf.items(), key=lambda kv: kv[1], reverse=True)
+        expansion: List[Tuple[str, float]] = [
+            (term, 0.3)
+            for term, _count in ranked_terms[:5]
+            if term not in query_terms
+            and not is_stopword(term)
+            and len(index.postings.get(term, ())) >= 2  # df==1 terms only re-amplify their source doc
+        ]
+        if not expansion:
+            return scored
+        merged = list(weighted_query) + expansion
+        return self._score(index, merged, now, room)
+
+
+def idf_concept(index: RetrieverIndex, concept: str) -> float:
+    """IDF-ish weight for a concept based on how many docs carry it (precomputed)."""
+    df = index.concept_df.get(concept, 0)
+    if df == 0 or index.doc_count == 0:
+        return 1.0
+    return min(1.0, math.log(1.0 + index.doc_count / (df + 1.0)))
+
+
+def _intent_boost(query_text: str, doc: RetrieverDoc) -> float:
+    for intent_name, pattern in _INTENT_RULES:
+        if pattern.search(query_text):
+            categories = _INTENT_CATEGORIES.get(intent_name, ())
+            if doc.category in categories or any(cat in doc.category for cat in categories):
+                return _INTENT_BOOST
+    return 0.0
+
+
+def _parse_custom_synonym_groups(groups: Optional[List[Any]]) -> List[Tuple[str, List[str]]]:
+    """Accepts a list of strings ("coffee, espresso, latte") or lists of words."""
+    out: List[Tuple[str, List[str]]] = []
+    if not groups:
+        return out
+    for i, group in enumerate(groups):
+        words: List[str] = []
+        if isinstance(group, str):
+            words = [w.strip().lower() for w in group.split(",") if w.strip()]
+        elif isinstance(group, (list, tuple)):
+            words = [str(w).strip().lower() for w in group if str(w).strip()]
+        words = [re.sub(r"\s+", "_", w) for w in words]
+        if len(words) >= 2:
+            out.append((f"custom_{i + 1}", words))
+    return out
+
+
+def is_anchor(doc: RetrieverDoc) -> bool:
+    key = doc.key.strip().lower()
+    return key in _ANCHOR_KEYS or doc.category in _ANCHOR_CATEGORIES
+
+
+def token_jaccard(a: RetrieverDoc, b: RetrieverDoc) -> float:
+    set_a = set(a.stems)
+    set_b = set(b.stems)
+    if not set_a or not set_b:
+        return 0.0
+    return len(set_a & set_b) / len(set_a | set_b)
+
+
+def mmr_select(scored: List[Dict[str, Any]], k: int, lam: float = _MMR_LAMBDA) -> List[Dict[str, Any]]:
+    """Maximal Marginal Relevance over already-scored docs (spec 6.7 step 3)."""
+    if k <= 0 or not scored:
+        return []
+    pool = list(scored)
+    selected: List[Dict[str, Any]] = []
+    # Seed with the best scorer.
+    best = max(pool, key=lambda item: item["score"])
+    pool.remove(best)
+    selected.append(best)
+    while pool and len(selected) < k:
+        best_gain = None
+        best_item = None
+        for item in pool:
+            doc = item["doc"]
+            diversity = 0.0
+            for chosen in selected:
+                diversity = max(diversity, token_jaccard(doc, chosen["doc"]))
+            gain = lam * item["score"] - (1.0 - lam) * diversity
+            if best_gain is None or gain > best_gain:
+                best_gain = gain
+                best_item = item
+        if best_item is None:
+            break
+        pool.remove(best_item)
+        selected.append(best_item)
+    return selected
+
+
+_RETRIEVER_LOCK = threading.Lock()
+_RETRIEVER_INSTANCE: Optional[LexicalRetriever] = None
+_INDEX_CACHE: Dict[Tuple[Any, ...], RetrieverIndex] = {}
+_INDEX_CACHE_ORDER: List[Tuple[Any, ...]] = []
+_INDEX_CACHE_LOCK = threading.Lock()
+_INDEX_CACHE_MAX = 64
+
+
+def get_retriever(settings: Optional[Dict[str, Any]] = None) -> LexicalRetriever:
+    """Single seam for retriever creation (spec 6.9)."""
+    global _RETRIEVER_INSTANCE
+    syn = str((settings or {}).get("custom_synonyms") or "")
+    lines = [line for line in syn.splitlines() if line.strip()]
+    config = RetrieverConfig(
+        fact_half_life_days=_setting_float(settings or {}, "fact_half_life_days", 120.0, min_value=0.25),
+        episode_half_life_days=_setting_float(settings or {}, "episode_half_life_days", 14.0, min_value=0.25),
+        synonym_groups=lines if lines else [],
+    )
+    with _RETRIEVER_LOCK:
+        if _RETRIEVER_INSTANCE is None:
+            _RETRIEVER_INSTANCE = LexicalRetriever(config)
+            return _RETRIEVER_INSTANCE
+        if _RETRIEVER_INSTANCE.config.synonym_groups != config.synonym_groups:
+            _RETRIEVER_INSTANCE = LexicalRetriever(config)  # type: ignore[assignment]
+        return _RETRIEVER_INSTANCE
+
+
+def cached_index(cache_key: Tuple[Any, ...], docs_fn) -> RetrieverIndex:
+    with _INDEX_CACHE_LOCK:
+        cached = _INDEX_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    index = docs_fn()
+    with _INDEX_CACHE_LOCK:
+        if cache_key not in _INDEX_CACHE:
+            _INDEX_CACHE[cache_key] = index
+            _INDEX_CACHE_ORDER.append(cache_key)
+            while len(_INDEX_CACHE_ORDER) > _INDEX_CACHE_MAX:
+                drop = _INDEX_CACHE_ORDER.pop(0)
+                _INDEX_CACHE.pop(drop, None)
+    return index
 
 
 def get_hydra_kernel_tools(*, platform: str = "", **_kwargs) -> List[Dict[str, Any]]:
