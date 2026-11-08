@@ -148,7 +148,7 @@ def test_chat_routines_collector(core, fake_redis_cls, monkeypatch):
     assert out
     row = out[0]
     assert row["kind"] == "chat_routine"
-    assert row["owner_doc_key"].startswith("memory_plus_core:user:")
+    assert row["owner_doc_key"].startswith("advanced_memory_core:user:")
     assert "the weather" in row["text"]
     assert row["stats"]["count"] >= 5 and row["stats"]["days"] >= 3
 
@@ -212,7 +212,7 @@ def test_habits_run_dedupes_dismisses_and_skips_approved(core, fake_redis_cls, m
 
 def _run(core, r, values):
     return core.handle_htmlui_tab_action(
-        action="memory_habits", payload={"values": values}, redis_client=r, core_key="memory_plus_core"
+        action="memory_habits", payload={"values": values}, redis_client=r, core_key="advanced_memory_core"
     )
 
 
@@ -329,17 +329,17 @@ def test_cycle_wiring_runs_habits_when_enabled_and_due(core, fake_redis_cls, mon
     }
     out = core._run_memory_cycle_once(None, settings)
     assert out["ok"] is True
-    summary = json.loads(r.hget("memory_plus_core:stats", "last_habits_summary") or "{}")
+    summary = json.loads(r.hget("advanced_memory_core:stats", "last_habits_summary") or "{}")
     assert summary.get("proposed") == 1
-    assert r.hget("memory_plus_core:stats", "last_habits_ts")
+    assert r.hget("advanced_memory_core:stats", "last_habits_ts")
 
     # A second cycle right after must not re-run (daily throttle).
-    ts_before = r.hget("memory_plus_core:stats", "last_habits_ts")
+    ts_before = r.hget("advanced_memory_core:stats", "last_habits_ts")
     core._run_memory_cycle_once(None, settings)
-    assert r.hget("memory_plus_core:stats", "last_habits_ts") == ts_before
+    assert r.hget("advanced_memory_core:stats", "last_habits_ts") == ts_before
 
     # And with the setting OFF, nothing runs (timestamp stored but stays "0.0").
     r2 = fake_redis_cls()
     core.redis_client = r2
     core._run_memory_cycle_once(None, {**settings, "enable_inferred_habits": "false"})
-    assert (r2.hget("memory_plus_core:stats", "last_habits_ts") or "0.0") == "0.0"
+    assert (r2.hget("advanced_memory_core:stats", "last_habits_ts") or "0.0") == "0.0"

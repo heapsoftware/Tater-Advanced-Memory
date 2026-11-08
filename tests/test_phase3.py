@@ -40,10 +40,10 @@ def test_backup_creates_snapshot_and_rotates(core, fake_redis_cls):
         core._memory_backup_doc(r, key, doc, now_ts=ts)
     stamps = sorted(
         k.rsplit(":", 1)[-1]
-        for k in r.keys("memory_plus_core:backup:*")
+        for k in r.keys("advanced_memory_core:backup:*")
     )
     assert len(stamps) == 3, f"rotation kept {len(stamps)}: {stamps}"
-    snap = json.loads(r.get(sorted(r.keys("memory_plus_core:backup:*"))[0]))
+    snap = json.loads(r.get(sorted(r.keys("advanced_memory_core:backup:*"))[0]))
     assert snap["doc"]["facts"]["a"]["value"] == 1
 
 
@@ -136,7 +136,7 @@ def test_consolidation_run_rejected_proposal_touches_nothing(core, fake_redis_cl
     assert summary["rejected"] == 1
     assert summary["applied_docs"] == 0
     assert r.get(key) == before
-    assert not r.keys("memory_plus_core:backup:*")
+    assert not r.keys("advanced_memory_core:backup:*")
 
     dry = fake_redis_cls()
     monkeypatch.setattr(core, "_memory_consolidation_proposal", lambda *a, **k: _proposal(rewrites=[{"key": "job", "value": "x"}]))

@@ -74,7 +74,7 @@ def test_payload_shape_and_retrieval(core, fake_redis_cls):
     payload = _get_payload(core, r)
     assert payload, "payload should not be empty"
     user_ctx = payload["user"]
-    assert user_ctx["doc_key"].startswith("memory_plus_core:user:")
+    assert user_ctx["doc_key"].startswith("advanced_memory_core:user:")
     assert "user" in payload and "room" in payload and "_summary_char_limit" in payload
     values = " ".join(item["value"] for item in user_ctx["items"])
     assert "thai curry" in values
@@ -256,8 +256,8 @@ def test_memory_recall_limit(core, fake_redis_cls):
 def test_wipe_still_scoped(core, fake_redis_cls):
     r = fake_redis_cls()
     core.redis_client = r
-    r.set("memory_plus_core:user:a", "x")
+    r.set("advanced_memory_core:user:a", "x")
     r.set("mem:user:stock", "keep")
-    core.wipe_memory_plus_core_data()
+    core.wipe_advanced_memory_core_data()
     assert r.exists("mem:user:stock") == 1
-    assert not r.keys("memory_plus_core:*") or r.keys("memory_plus_core:*") == []
+    assert not r.keys("advanced_memory_core:*") or r.keys("advanced_memory_core:*") == []

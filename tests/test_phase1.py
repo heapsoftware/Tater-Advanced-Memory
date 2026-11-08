@@ -152,8 +152,8 @@ def test_doc_roundtrip(core, fake_redis_cls):
         {"candidate_key": "occupation", "value": "engineer", "confidence": 0.9, "category": "demographic_information"},
         min_confidence=0.5, default_ttl_sec=0, allow_new_keys=True, now=NOW,
     )
-    core.save_doc(r, "memory_plus_core:user:identity:tester", doc, now=NOW)
-    loaded = core.load_doc(r, "memory_plus_core:user:identity:tester", now=NOW)
+    core.save_doc(r, "advanced_memory_core:user:identity:tester", doc, now=NOW)
+    loaded = core.load_doc(r, "advanced_memory_core:user:identity:tester", now=NOW)
     assert loaded["facts"]["occupation"]["value"] == "engineer"
 
 
@@ -169,9 +169,9 @@ def test_forget_fact_keys(core):
 # ---------- identity & namespaces ----------
 
 def test_user_doc_key_uses_own_prefix(core):
-    assert core.user_doc_key("macos", "u1") == "memory_plus_core:user:macos:u1"
-    assert core.room_doc_key("discord", "chan1") == "memory_plus_core:room:discord:chan1"
-    assert core.identity_doc_key("tester") == "memory_plus_core:user:identity:tester"
+    assert core.user_doc_key("macos", "u1") == "advanced_memory_core:user:macos:u1"
+    assert core.room_doc_key("discord", "chan1") == "advanced_memory_core:room:discord:chan1"
+    assert core.identity_doc_key("tester") == "advanced_memory_core:user:identity:tester"
 
 
 def test_resolve_identity_without_people(core, fake_redis_cls):
@@ -189,7 +189,7 @@ def test_doc_keys_never_collide_with_stock(core):
         core.cursor_key("macos", "session1"),
     ):
         assert "mem:" != key[:4]
-        assert key.startswith("memory_plus_core:")
+        assert key.startswith("advanced_memory_core:")
 
 
 # ---------- hook contracts (never raise) ----------
@@ -226,11 +226,11 @@ def test_run_hydra_kernel_tool_unknown_id(core):
 def test_wipe_only_touches_own_namespace(core, fake_redis_cls):
     r = fake_redis_cls()
     core.redis_client = r  # wipe operates on the module-level redis client
-    r.set("memory_plus_core:user:identity:x", "{}")
-    r.set("memory_plus_core:meta", "{}")
+    r.set("advanced_memory_core:user:identity:x", "{}")
+    r.set("advanced_memory_core:meta", "{}")
     r.set("mem:user:keep:me", "{}")  # stock key must survive
     r.set("tater:something", "keep")
-    assert core.wipe_memory_plus_core_data() >= 2
+    assert core.wipe_advanced_memory_core_data() >= 2
     assert r.exists("mem:user:keep:me") == 1
     assert r.exists("tater:something") == 1
-    assert not r.keys("memory_plus_core:*") or r.keys("memory_plus_core:*") == []
+    assert not r.keys("advanced_memory_core:*") or r.keys("advanced_memory_core:*") == []

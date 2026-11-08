@@ -1,4 +1,4 @@
-"""Test fixtures for memory_plus_core: stub Tater runtime modules, then load the core."""
+"""Test fixtures for advanced_memory_core: stub Tater runtime modules, then load the core."""
 
 import importlib.util
 import json
@@ -9,7 +9,7 @@ import types
 
 import pytest
 
-CORE_PATH = "/home/tater-advanced-memory/tater-memory-plus/cores/memory_plus_core.py"
+CORE_PATH = "/home/tater-advanced-memory/tater-memory-plus/cores/advanced_memory_core.py"
 
 
 class FakeRedis:
@@ -133,7 +133,7 @@ def _install_helpers_stub(monkeypatch_extra=None):
     return helpers
 
 
-def load_core(unique_name="memory_plus_core_test"):
+def load_core(unique_name="advanced_memory_core_test"):
     _install_helpers_stub()
     spec = importlib.util.spec_from_file_location(unique_name, CORE_PATH)
     module = importlib.util.module_from_spec(spec)
@@ -150,7 +150,7 @@ def core():
 @pytest.fixture
 def core_fresh():
     """Load the core under a new unique module name (state isolation)."""
-    name = f"memory_plus_core_test_{time.time_ns()}"
+    name = f"advanced_memory_core_test_{time.time_ns()}"
     return load_core(name)
 
 

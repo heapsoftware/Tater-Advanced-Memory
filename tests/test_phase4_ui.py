@@ -45,7 +45,7 @@ def test_tab_data_manager_shape(core, fake_redis_cls):
 
 def test_tab_data_marks_shadow_mode(core, fake_redis_cls):
     r, _ = _seed(core, fake_redis_cls)
-    r.hset("memory_plus_core_settings", mapping={"inject_context": "false"})
+    r.hset("advanced_memory_core_settings", mapping={"inject_context": "false"})
     data = core.get_htmlui_tab_data(redis_client=r)
     assert any(item.get("value") == "shadow mode (extraction only, no injection)" for item in data["stats"])
 
@@ -72,7 +72,7 @@ def test_doc_rows_include_facts_episodes_and_card(core, fake_redis_cls):
 # ---------- recall tester action ----------
 
 def _run_action(core, r, action, values):
-    return core.handle_htmlui_tab_action(action=action, payload={"values": values}, redis_client=r, core_key="memory_plus_core")
+    return core.handle_htmlui_tab_action(action=action, payload={"values": values}, redis_client=r, core_key="advanced_memory_core")
 
 
 def test_recall_tester_reports_ranking_and_injection(core, fake_redis_cls):
@@ -102,7 +102,7 @@ def test_recall_tester_requires_query_and_doc(core, fake_redis_cls):
 
 def test_recall_tester_shadow_mode_says_nothing_injected(core, fake_redis_cls):
     r, doc_key = _seed(core, fake_redis_cls)
-    r.hset("memory_plus_core_settings", mapping={"inject_context": "false"})
+    r.hset("advanced_memory_core_settings", mapping={"inject_context": "false"})
     out = _run_action(core, r, "memory_tool_action", {
         "tool_action": "recall_test", "tester_query": "what should I cook tonight",
         "tester_doc_key": doc_key,
@@ -181,8 +181,8 @@ def test_maintenance_wipe_requires_confirmation(core, fake_redis_cls):
         pass
     out = _run_action(core, r, "memory_tool_action", {"tool_action": "wipe_all", "wipe_confirm": "WIPE"})
     assert out["ok"] is True
-    assert not r.keys("memory_plus_core:*") or r.keys("memory_plus_core:*") == []
-    assert r.exists("memory_plus_core_settings") == 0
+    assert not r.keys("advanced_memory_core:*") or r.keys("advanced_memory_core:*") == []
+    assert r.exists("advanced_memory_core_settings") == 0
     assert r.keys("mem:user:*") or not r.keys("mem:user:*")
 
 
