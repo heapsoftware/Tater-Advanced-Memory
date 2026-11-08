@@ -6,11 +6,11 @@
       "id": "advanced_memory",
       "name": "Advanced Memory",
       "module_key": "advanced_memory_core",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "min_tater_version": "187",
       "description": "Enhanced memory: episodic recall, smart lexical retrieval, profile cards, nightly consolidation.",
       "settings_category": "Advanced Memory Settings",
-      "required_settings_count": 22,
+      "required_settings_count": 27,
       "autostart_key": "advanced_memory_core_running",
       "tags": [
         "memory",
@@ -18,7 +18,7 @@
         "recall"
       ],
       "entry": "cores/advanced_memory_core.py",
-      "sha256": "a1ede6989fd14eb75f8b3c1c73808e272fb0878cbb70ffe59f8633a75704e4f1"
+      "sha256": "3b411a2f7893f20ed1d0a82fdfcfd2bfb4e969a58dd42f014b6a65353a21541b"
     }
   ]
 }

@@ -37,7 +37,7 @@ except Exception:  # pragma: no cover - python-dotenv ships with Tater.
     def load_dotenv(*_args, **_kwargs) -> bool:
         return False
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 MIN_TATER_VERSION = "187"
 CORE_DESCRIPTION = (
     "Enhanced memory: episodic recall, smart lexical retrieval, profile cards, nightly consolidation."
@@ -215,9 +215,57 @@ CORE_SETTINGS = {
             "default": False,
             "description": (
                 "Nightly, no-LLM pattern mining of Awareness events, the Automation-GA entity "
-                "journal, Personal Music Core + Music Core listening history, and chat request "
-                "routines. Patterns sit in the Advanced Memory tab's Habits tab until you "
-                "approve them; approved habits inject as '(likely)' facts."
+                "journal, Personal Music Core + Music Core listening history, chat request "
+                "routines, and Awareness presence/Face-ID routines. Patterns sit in the "
+                "Advanced Memory tab's Habits tab until you approve them; approved habits "
+                "inject as '(likely)' facts."
+            ),
+        },
+        "enable_automation_suggestions": {
+            "label": "Automation Suggestions",
+            "type": "checkbox",
+            "default": True,
+            "description": (
+                "When an approved habit keeps recurring, propose creating a matching "
+                "automation in the Automation-GA core (Hydra authors the rule; nothing "
+                "runs until that core approves it)."
+            ),
+        },
+        "automation_offer_scope": {
+            "label": "Automation Proposal Types",
+            "type": "select",
+            "default": "composite",
+            "options": [
+                {"value": "composite", "label": "Composite routines (presence + an action)"},
+                {"value": "person_routines", "label": "Any person-owned pattern"},
+                {"value": "any_pattern", "label": "Every approved pattern"},
+            ],
+        },
+        "automation_offer_after_recurrences": {
+            "label": "Offer After N Recurrences",
+            "type": "number",
+            "default": 5,
+            "description": "Approved patterns must recur this many more times before an automation is proposed.",
+        },
+        "automation_offers_channel": {
+            "label": "Proactive Ask Channel",
+            "type": "select",
+            "default": "notification",
+            "options": [
+                {"value": "off", "label": "Habits tab only (no proactive asks)"},
+                {"value": "notification", "label": "Notification"},
+                {"value": "announcement", "label": "Room satellite announcement"},
+                {"value": "both", "label": "Both notification and announcement"},
+            ],
+            "description": "Where the proactive 'want me to automate this?' ask is delivered.",
+        },
+        "announcement_default_sat": {
+            "label": "Default Announcement SAT",
+            "type": "text",
+            "default": "",
+            "description": (
+                "Fallback satellite when the pattern's room has none (matched by name/area "
+                "tokens against Tater's satellite list)."
             ),
         },
     },
@@ -4798,12 +4846,514 @@ def _memory_plus_habits_dismissed_fps(redis_obj) -> Dict[str, float]:
     return out
 
 
+# ---- §7.7+ Presence routines & automation suggestions (v1.4) ----
+# Presence routines: Awareness Face-ID sessions give (person, area, time).
+# Recurrence tracking for APPROVED patterns accumulates on every nightly pass;
+# at a threshold, an automation proposal is offered (Habits tab and/or a
+# proactive notification/announcement) — creation goes THROUGH Hydra, which
+# authors the automation in the Automation-GA core (GA's own gates still apply).
+
+_HABITS_FACE_SESSION_PREFIX = "awareness:face_session:"
+_HABITS_FACE_MAX_SESSIONS = 200
+_HABITS_RECURRENCE_KEY = "advanced_memory_core:habits:recurrence"
+_HABITS_RECURRENCE_MAX = 500
+_HABITS_AUTO_OFFERED_KEY = "advanced_memory_core:habits:auto_offered"
+_HABITS_APPROVED_KEY = "advanced_memory_core:habits:approved"
+_HABITS_APPROVED_MAX = 500
+_HABITS_SAT_REGISTRY_KEY = "tater:voice:satellites:registry:v1"
+
+def _memory_plus_habits_approved_fps(redis_obj) -> Dict[str, str]:
+    """fp -> owner_doc_key for every habit the user approved (approval-time record).
+    Lets approval attribution survive collectors re-resolving owners differently
+    (e.g. a home-wide pattern the user filed under a person doc)."""
+    try:
+        raw = redis_obj.hgetall(_HABITS_APPROVED_KEY) or {}
+    except Exception:
+        return {}
+    out: Dict[str, str] = {}
+    for fp, owner in raw.items():
+        text = _as_text(fp).strip()
+        if text:
+            out[text] = _habits_normalize_owner_doc(owner)
+    return out
+_HABITS_ACTION_KINDS = {"chat_routine", "music", "personal_music"}
+
+
+def _habits_weekday_label(stamps) -> str:
+    stamps = [ts for ts in stamps if ts]
+    if not stamps:
+        return ""
+    weekdays = sum(1 for ts in stamps if time.localtime(ts).tm_wday < 5)
+    share = weekdays / float(len(stamps))
+    if share >= 0.8:
+        return "mostly weekdays"
+    if share <= 0.2:
+        return "mostly weekends"
+    return ""
+
+
+def _habits_collect_presence(redis_obj) -> List[Dict[str, Any]]:
+    """Person+room+time routines from Awareness Face-ID sessions.
+
+    Each completed session carries the area, recognized People person ids, and
+    a created/completed ISO timestamp. Same support thresholds as other collectors.
+    """
+    out: List[Dict[str, Any]] = []
+    if redis_obj is None:
+        return out
+    try:
+        keys = [str(k) for k in redis_obj.keys(f"{_HABITS_FACE_SESSION_PREFIX}*")]
+    except Exception:
+        keys = []
+    buckets: Dict[Tuple[str, str], Dict[int, List[float]]] = {}
+    for key in keys[:_HABITS_FACE_MAX_SESSIONS]:
+        try:
+            raw = redis_obj.get(key)
+        except Exception:
+            continue
+        try:
+            row = json.loads(_as_text(raw))
+        except Exception:
+            continue
+        if not isinstance(row, dict):
+            continue
+        area = _as_text(row.get("area")).strip()
+        person_ids = [
+            str(pid).strip()
+            for pid in (row.get("recognized_person_ids") or row.get("person_ids") or [])
+            if str(pid).strip()
+        ]
+        if not area or not person_ids:
+            continue
+        ts = _habits_parse_iso_ts(row.get("created_at") or row.get("completed_at"))
+        if ts <= 0.0:
+            continue
+        bucket = _habits_hour_bucket(ts)
+        for person_id in person_ids:
+            buckets.setdefault((person_id, area), {}).setdefault(bucket, []).append(ts)
+
+    def _resolve_owner(person_id: str) -> Tuple[str, str]:
+        try:
+            person_rows = _people_person_rows(redis_obj)
+        except Exception:
+            person_rows = []
+        wanted = person_id.strip()
+        for person in person_rows or []:
+            row_id = _as_text(person.get("id")).strip()
+            if row_id == wanted:
+                return identity_doc_key(row_id), _as_text(person.get("display_name")).strip()
+        return "", ""
+
+    for (person_id, area), per_bucket in buckets.items():
+        owner, display_name = _resolve_owner(person_id)
+        if not owner:
+            continue
+        person_label = display_name.title() if display_name else person_id
+        area_label = area.replace("_", " ").strip()
+        for bucket, stamps in per_bucket.items():
+            days = _habits_distinct_days(stamps)
+            if len(stamps) < _HABITS_MIN_COUNT or days < _HABITS_MIN_DAYS:
+                continue
+            skew = _habits_weekday_label(stamps)
+            subject = f"{person_label} in {area_label}"
+            stats = {"count": len(stamps), "days": days, "bucket": _habits_bucket_label(bucket)}
+            if skew:
+                stats["schedule"] = skew
+            skew_note = f" ({skew})" if skew else ""
+            out.append(
+                {
+                    "fp": _habits_fingerprint("presence", f"{person_label}|{area_label}", bucket),
+                    "kind": "presence",
+                    "subject": subject,
+                    "area": area_label,
+                    "text": (
+                        f"(likely) {person_label} is usually in the {area_label} between "
+                        f"{_habits_bucket_label(bucket)}{skew_note} "
+                        f"({len(stamps)} sightings over {days} days)."
+                    ),
+                    "owner_doc_key": owner,
+                    "stats": stats,
+                }
+            )
+    return out
+
+
+def _habits_recurrence_bump(
+    redis_obj,
+    entries: Dict[str, Dict[str, Any]],
+    approved_fps: set,
+    approved_owners: Optional[Dict[str, str]] = None,
+    *, now_ts: float,
+) -> Dict[str, Dict[str, Any]]:
+    """Record each APPROVED collected pattern's context + count onto the recurrence
+    hash, so recurring behaviour accumulates evidence over nights. Owner attribution
+    prefers what the collector resolved; falls back to the approval-time owner
+    (patterns the user filed under a person doc stay person-owned). Returns the
+    merged recurrence state (fp -> info dict)."""
+    owners = approved_owners or {}
+    state: Dict[str, Dict[str, Any]] = {}
+    try:
+        raw = redis_obj.hgetall(_HABITS_RECURRENCE_KEY) or {}
+    except Exception:
+        raw = {}
+    for fp, blob in raw.items():
+        try:
+            row = json.loads(_as_text(blob))
+        except Exception:
+            continue
+        if isinstance(row, dict) and fp:
+            state[str(fp)] = row
+    for fp, entry in entries.items():
+        if fp not in approved_fps:
+            continue
+        stats = entry.get("stats") if isinstance(entry.get("stats"), dict) else {}
+        prior = state.get(fp) or {}
+        state[fp] = {
+            "kind": entry.get("kind"),
+            "subject": entry.get("subject"),
+            "text": entry.get("text"),
+            "area": entry.get("area", ""),
+            "owner_doc_key": _as_text(entry.get("owner_doc_key")).strip() or owners.get(fp, ""),
+            "bucket": _as_text(stats.get("bucket")),
+            "count": _safe_int(prior.get("count"), 1, min_value=1) + _safe_int(stats.get("count"), 1, min_value=1),
+            "last_ts": float(now_ts),
+        }
+    try:
+        ranked = sorted(state.items(), key=lambda kv: _as_float((kv[1] or {}).get("last_ts"), 0.0, min_value=0.0))
+        if len(ranked) > _HABITS_RECURRENCE_MAX:
+            ranked = ranked[-_HABITS_RECURRENCE_MAX:]
+        mapping = {fp: json.dumps(info, ensure_ascii=False, sort_keys=True, default=str) for fp, info in ranked}
+        redis_obj.delete(_HABITS_RECURRENCE_KEY)
+        redis_obj.hset(_HABITS_RECURRENCE_KEY, mapping=mapping)
+    except Exception:
+        logger.debug("[memory_plus] recurrence save failed", exc_info=True)
+    return state
+
+
+def _habits_automation_candidates(
+    recurrence_state: Dict[str, Dict[str, Any]],
+    approved_fps: set,
+    *, scope_mode: str, threshold: int,
+) -> List[Dict[str, Any]]:
+    """Approved patterns eligible for an automation proposal, per scope_mode:
+    composite -> a presence routine at a person+bucket that ALSO has an approved
+    action pattern; person_routines -> only patterns attributed to a person doc
+    (owner from the collector or, failing that, where the user approved it);
+    any_pattern -> everything approved."""
+    candidates: List[Dict[str, Any]] = []
+    action_keys = set()
+    if scope_mode == "composite":
+        action_keys = {
+            (_as_text(row.get("owner_doc_key")).strip(), _as_text(row.get("bucket")).strip())
+            for fp, row in recurrence_state.items()
+            if fp in approved_fps
+            and _as_text(row.get("owner_doc_key")).strip()
+            and _as_text(row.get("kind")).strip() in _HABITS_ACTION_KINDS
+        }
+    for fp, row in recurrence_state.items():
+        if fp not in approved_fps:
+            continue
+        if _safe_int(row.get("count"), 0, min_value=0) < threshold:
+            continue
+        owner = _as_text(row.get("owner_doc_key")).strip()
+        if scope_mode == "composite":
+            if _as_text(row.get("kind")).strip() != "presence":
+                continue
+            if (owner, _as_text(row.get("bucket")).strip()) not in action_keys:
+                continue
+        elif scope_mode == "person_routines" and (
+            not owner or owner.startswith(ROOM_DOC_PREFIX + ":")
+        ):
+            continue
+        candidates.append({"fp": fp, **row})
+    return candidates
+
+
+def _habits_satellite_targets(redis_obj) -> List[Dict[str, Any]]:
+    """Read-only snapshot of the voice-core satellite registry (selector + area)."""
+    try:
+        raw = redis_obj.get(_HABITS_SAT_REGISTRY_KEY)
+    except Exception:
+        return []
+    try:
+        parsed = json.loads(_as_text(raw))
+    except Exception:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for row in parsed:
+        if not isinstance(row, dict):
+            continue
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        device_info = row.get("device_info") if isinstance(row.get("device_info"), dict) else {}
+        area = ""
+        for key in ("area_name", "room_name", "room", "area"):
+            area = (
+                _as_text(metadata.get(key)).strip()
+                or _as_text(row.get(key)).strip()
+                or _as_text(device_info.get(key)).strip()
+            )
+            if area:
+                break
+        selector = _as_text(row.get("selector")).strip()
+        name = (
+            _as_text(row.get("name")).strip()
+            or _as_text(row.get("friendly_name")).strip()
+            or _as_text(row.get("device_name")).strip()
+            or _as_text(device_info.get("friendly_name")).strip()
+        )
+        if selector:
+            out.append({"selector": selector, "area": area, "name": name})
+    return out
+
+
+def _habits_resolve_announcement_target(area: str, configured_default: Any) -> List[str]:
+    """Room-aware SAT routing: the satellite assigned to the area where the user was
+    detected wins; otherwise the user-configured default SAT from settings; else none."""
+    try:
+        satellites = _habits_satellite_targets(globals().get("redis_client"))
+    except Exception:
+        satellites = []
+    wanted = _as_text(area).strip().lower().replace("_", " ")
+    wanted_tokens = {tok for tok in wanted.split(" ") if tok} if wanted else set()
+    default_text = _as_text(configured_default).strip().lower()
+    # Pass 1: satellite assigned to the pattern's area.
+    if wanted_tokens:
+        for row in satellites:
+            row_area = _as_text(row.get("area")).strip().lower().replace("_", " ")
+            if row_area and (row_area == wanted or (wanted_tokens & {t for t in row_area.split(" ") if t})):
+                return [row["selector"]]
+    # Pass 2: the user's configured default SAT (matched by name/area tokens).
+    if default_text:
+        for row in satellites:
+            haystack = f"{_as_text(row.get('area')).strip().lower()} {_as_text(row.get('name')).strip().lower()} {_as_text(row.get('selector')).strip().lower()}"
+            if all(tok in haystack for tok in default_text.split(" ")):
+                return [row["selector"]]
+    return []
+
+
+def _habits_announce_blocking(text: str, targets: List[str]) -> Dict[str, Any]:
+    """Speak a short announcement through Tater's speech stack (same pattern the
+    Automation-GA core uses). Guarded: missing modules or settings degrade to a
+    failure dict instead of raising."""
+    try:
+        from announcement_targets import normalize_announcement_targets
+        from notify.core import load_homeassistant_config
+        from speech_tts import speak_announcement_targets
+
+        try:
+            from speech_settings import get_speech_settings
+        except Exception:
+            get_speech_settings = None
+    except Exception as exc:
+        return {"ok": False, "error": f"speech stack unavailable: {exc}"}
+
+    def _text_field(name: str, default="") -> Any:
+        if get_speech_settings is None:
+            return default
+        try:
+            shared = get_speech_settings() or {}
+        except Exception:
+            return default
+        return shared.get(name) or default
+
+    announcement_backend = (
+        _text_field("announcement_tts_backend") or _text_field("tts_backend") or "wyoming"
+    )
+    try:
+        resolved = normalize_announcement_targets(targets)
+    except Exception as exc:
+        return {"ok": False, "error": f"announcement target resolution failed: {exc}"}
+    if not resolved:
+        return {"ok": False, "error": "no announcement targets resolved"}
+    try:
+        conf = load_homeassistant_config()
+    except Exception as exc:
+        return {"ok": False, "error": f"Home Assistant config unavailable: {exc}"}
+
+    async def _run():
+        return await speak_announcement_targets(
+            text=text,
+            backend=announcement_backend,
+            ha_base=conf.get("base") or "",
+            token=conf.get("token") or "",
+            targets=resolved,
+            model=_as_text(_text_field("announcement_tts_model")),
+            voice=_as_text(_text_field("announcement_tts_voice")),
+            wyoming_host=_as_text(_text_field("wyoming_tts_host")),
+            wyoming_port=_text_field("wyoming_tts_port"),
+            wyoming_voice=_as_text(_text_field("wyoming_tts_voice")),
+        )
+
+    loop = asyncio.new_event_loop()
+    try:
+        result = loop.run_until_complete(_run())
+        return {"ok": True, "result": result}
+    except Exception as exc:
+        return {"ok": False, "error": f"announcement failed: {exc}"}
+    finally:
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception:
+            pass
+        loop.close()
+
+
+def _habits_notify_person(text: str) -> Dict[str, Any]:
+    """Proactive notification through Tater's notifier system (bounded: top always-on
+    destinations; unconfigured destinations just report a no-op status)."""
+    try:
+        from notify import dispatch_notification_sync
+        from notify.core import core_notifier_platforms
+    except Exception as exc:
+        return {"ok": False, "error": f"notify stack unavailable: {exc}"}
+    delivered = []
+    for platform in core_notifier_platforms()[:4]:
+        try:
+            result = dispatch_notification_sync(
+                platform=platform,
+                title="Habit pattern noticed",
+                content=text,
+                origin={"platform": "webui", "display_name": "Advanced Memory"},
+            )
+            delivered.append(f"{platform}: {result}")
+        except Exception as exc:
+            delivered.append(f"{platform}: failed ({exc})")
+    return {"ok": bool(delivered), "result": delivered}
+
+
+def _memory_plus_habits_auto_offered(redis_obj) -> Dict[str, float]:
+    try:
+        raw = redis_obj.hgetall(_HABITS_AUTO_OFFERED_KEY) or {}
+    except Exception:
+        return {}
+    out: Dict[str, float] = {}
+    for fp, ts in raw.items():
+        text = _as_text(fp).strip()
+        if text:
+            out[text] = _as_float(ts, 0.0, min_value=0.0)
+    return out
+
+
+def _memory_plus_habits_save_auto_offered(redis_obj, state: Dict[str, float]) -> None:
+    if redis_obj is None:
+        return
+    try:
+        mapping = {fp: f"{ts:.3f}" for fp, ts in sorted(state.items())[-_HABITS_RECURRENCE_MAX:]}
+        redis_obj.delete(_HABITS_AUTO_OFFERED_KEY)
+        redis_obj.hset(_HABITS_AUTO_OFFERED_KEY, mapping=mapping)
+    except Exception:
+        logger.debug("[memory_plus] auto_offered save failed", exc_info=True)
+
+
+def _memory_plus_habits_offer_automation(
+    entries: List[Dict[str, Any]],
+    proposals_sink: Dict[str, Dict[str, Any]],
+    existing_fps: set,
+    dismissed: Dict[str, float],
+    auto_offered: Dict[str, float],
+    settings: Dict[str, Any],
+    *, now_ts: float,
+) -> int:
+    """Create automation_suggest proposals for eligible recurring patterns and, per
+    the channel setting, dispatch a proactive notification and/or room-routed
+    announcement. Returns how many proposals were offered."""
+    channel = _as_text(settings.get("automation_offers_channel")).strip().lower() or "off"
+    offered = 0
+    for entry in entries:
+        source_fp = _as_text(entry.get("fp")).strip()
+        if not source_fp or source_fp in auto_offered:
+            continue
+        proposal_fp = f"as_{source_fp}"
+        if proposal_fp in existing_fps or proposal_fp in dismissed:
+            continue
+        habit_text = _as_text(entry.get("text")).strip()
+        if habit_text.startswith("(likely) "):
+            habit_text = habit_text[len("(likely) "):]
+        proposal = {
+            "id": f"auto_{source_fp}",
+            "fp": proposal_fp,
+            "source_fp": source_fp,
+            "kind": "automation_suggest",
+            "subject": f"Automation: {_as_text(entry.get('subject')).strip() or source_fp}",
+            "area": _as_text(entry.get("area")).strip(),
+            "text": (
+                f"Automation idea from your habit: {habit_text} — "
+                f"Advanced Memory can ask Hydra to author a matching automation in the "
+                f"Automation-GA core (nothing runs until the rule is approved there)."
+            ),
+            "owner_doc_key": _habits_normalize_owner_doc(entry.get("owner_doc_key")),
+            "stats": {"count": _safe_int(entry.get("count"), 1, min_value=1), "bucket": _as_text(entry.get("bucket"))},
+            "created_ts": float(now_ts),
+        }
+        existing_fps.add(proposal_fp)
+        auto_offered[source_fp] = float(now_ts)
+        proposals_sink[proposal["id"]] = proposal
+        offered += 1
+        if channel != "off":
+            if channel in {"notification", "both"}:
+                _habits_notify_person(proposal["text"])
+            if channel in {"announcement", "both"}:
+                targets = _habits_resolve_announcement_target(
+                    proposal.get("area"), settings.get("announcement_default_sat")
+                )
+                if targets:
+                    _habits_announce_blocking(f"Heads up: {proposal['text']}", targets)
+    return offered
+
+
+def _habits_run_hydra_turn(redis_obj: Any, instruction: str) -> Dict[str, Any]:
+    """Author + create the automation THROUGH Hydra (the sanctioned author for the
+    Automation-GA core). Returns the turn result for the response message."""
+    if redis_obj is None:
+        raise ValueError("Advanced Memory is not connected to Redis yet.")
+    try:
+        llm_client = _get_primary_llm_client_from_env()
+    except Exception:
+        llm_client = None
+    if llm_client is None:
+        raise ValueError("No LLM client is available; configure a provider before creating automations.")
+    try:
+        from hydra import run_hydra_turn
+        from verba_registry import get_verba_registry_snapshot
+    except Exception as exc:
+        raise ValueError(f"Tater tooling is unavailable in this runtime: {exc}")
+    scope = f"memory_plus_auto_{hashlib.sha1(instruction.encode()).hexdigest()[:10]}"
+
+    async def _go() -> Dict[str, Any]:
+        return await run_hydra_turn(
+            llm_client=llm_client,
+            platform="webui",
+            history_messages=[],
+            registry=get_verba_registry_snapshot(),
+            enabled_predicate=None,
+            context={"source": "advanced_memory_habits"},
+            user_text=instruction,
+            scope=scope,
+            origin={"platform": "webui", "user_id": "", "display_name": "Advanced Memory"},
+            redis_client=redis_obj,
+        )
+
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(_go())
+    finally:
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception:
+            pass
+        loop.close()
+
+
+
 def _memory_plus_habits_run(redis_obj, settings: Dict[str, Any], *, now_ts: float) -> Dict[str, Any]:
     """One nightly habits pass: deterministic pattern mining -> pending proposals.
 
     Never raises for collector failures (each source is guarded); an unavailable
-    source simply contributes zero. Nothing is injected directly — approved
-    patterns become inferred facts through the tab's Approve flow.
+    source simply contributes zero. Approved patterns keep accumulating recurrence
+    evidence and can escalate to automation proposals (Habits tab and, for the
+    enabled channels, a proactive notification and/or room-routed announcement).
     """
     collected: List[Dict[str, Any]] = []
     collector_stats: Dict[str, int] = {}
@@ -4812,6 +5362,7 @@ def _memory_plus_habits_run(redis_obj, settings: Dict[str, Any], *, now_ts: floa
         ("ga_journal", _habits_collect_ga_journal),
         ("personal_music", _habits_collect_personal_music),
         ("music", _habits_collect_music),
+        ("presence", _habits_collect_presence),
         ("chat_routines", _habits_collect_chat_routines),
     ):
         try:
@@ -4826,7 +5377,7 @@ def _memory_plus_habits_run(redis_obj, settings: Dict[str, Any], *, now_ts: floa
     pending = _memory_plus_habits_pending(redis_obj)
     existing_fps = {str(p.get("fp") or "") for p in pending.values()}
 
-    # Fingerprints already approved into docs (so they are never re-proposed).
+    # Fingerprints already approved into docs (never re-proposed; still counted).
     approved_fps: set = set()
     for proposal in collected:
         owner = _habits_normalize_owner_doc(proposal.get("owner_doc_key"))
@@ -4841,8 +5392,45 @@ def _memory_plus_habits_run(redis_obj, settings: Dict[str, Any], *, now_ts: floa
                 fp = _as_text(fact.get("habit_fp")).strip()
                 if fp:
                     approved_fps.add(fp)
+    approved_owners = _memory_plus_habits_approved_fps(redis_obj)
+    approved_fps.update(approved_owners)
 
+    # Also count approved habits that keep recurring: their fingerprints live in
+    # the recurrence hash even when this pass's collectors missed them.
+    collected_by_fp: Dict[str, Dict[str, Any]] = {}
+    for proposal in collected:
+        fp = _as_text(proposal.get("fp")).strip()
+        if fp:
+            collected_by_fp.setdefault(fp, proposal)
+    recurrence_state = _habits_recurrence_bump(
+        redis_obj, collected_by_fp, approved_fps, approved_owners, now_ts=now_ts
+    )
+
+    # ---- Automation proposals from approved pattern recurrence ----
     new_proposals: Dict[str, Dict[str, Any]] = {}
+    automation_candidates: List[Dict[str, Any]] = []
+    auto_offered = _memory_plus_habits_auto_offered(redis_obj)
+    if _as_bool(settings.get("enable_automation_suggestions"), True):
+        scope_mode = _as_text(settings.get("automation_offer_scope")).strip().lower() or "composite"
+        threshold = _as_int(
+            settings.get("automation_offer_after_recurrences"), 5, min_value=2, max_value=60
+        )
+        automation_candidates = _habits_automation_candidates(
+            recurrence_state, approved_fps, scope_mode=scope_mode, threshold=threshold
+        )
+        _memory_plus_habits_offer_automation(
+            automation_candidates,
+            new_proposals,
+            existing_fps,
+            dismissed,
+            auto_offered,
+            settings,
+            now_ts=now_ts,
+        )
+        if auto_offered != _memory_plus_habits_auto_offered(redis_obj):
+            _memory_plus_habits_save_auto_offered(redis_obj, auto_offered)
+
+    # ---- Regular habit proposals (dedupe across runs and sources) ----
     for proposal in collected:
         fp = _as_text(proposal.get("fp")).strip()
         if not fp or fp in dismissed or fp in existing_fps or fp in approved_fps or fp in new_proposals:
@@ -4851,12 +5439,15 @@ def _memory_plus_habits_run(redis_obj, settings: Dict[str, Any], *, now_ts: floa
         proposal["id"] = proposal_id
         proposal["created_ts"] = float(now_ts)
         new_proposals[proposal_id] = proposal
+    proposed_auto = sum(1 for p in new_proposals.values() if p.get("kind") == "automation_suggest")
 
     merged = dict(pending)
     merged.update(new_proposals)
     _memory_plus_habits_save_pending(redis_obj, merged)
     return {
         "proposed": len(new_proposals),
+        "automation_proposed": proposed_auto,
+        "automation_candidates": len(automation_candidates),
         "pending": len(merged),
         "collectors": collector_stats,
         "dismissed_total": len(dismissed),
@@ -4903,6 +5494,25 @@ def _memory_habits_action(_val: Any, client: Any) -> Dict[str, Any]:
     if decision == "keep":
         return {"ok": True, "message": f"Kept '{proposal.get('subject') or proposal_id}' pending."}
 
+    if _as_text(proposal.get("kind")).strip() == "automation_suggest":
+        # Approving an automation idea routes through Hydra: the planner authors the
+        # rule in the Automation-GA core, whose own validation/review still applies.
+        habit_instruction = (
+            f"Create a new automation in the Automation-GA core based on this verified routine: "
+            f"{_as_text(proposal.get('text')).strip()}"
+        )
+        turn_result = _habits_run_hydra_turn(client, habit_instruction)
+        client.hdel(_HABITS_PENDING_KEY, proposal_id)
+        summary = ""
+        if isinstance(turn_result, dict):
+            summary = _as_text(turn_result.get("text")).strip()
+        response = _memory_plus_sanitize_text(summary or "Hydra accepted the automation request.", 400)
+        return {
+            "ok": True,
+            "message": f"Automation request handed to Hydra: {response}",
+            "say_hint": "Report that Hydra was asked to author the automation and share its reply.",
+        }
+
     owner = _habits_normalize_owner_doc(_val("habit_owner_doc"))
     if not owner:
         raise ValueError("Choose which person's memory (or room doc) this habit belongs to before approving.")
@@ -4927,6 +5537,16 @@ def _memory_habits_action(_val: Any, client: Any) -> Dict[str, Any]:
         fact["habit_fp"] = fp
         fact["habit_kind"] = _as_text(proposal.get("kind")).strip()
     save_doc(client, owner, doc, now=now_ts)
+    try:
+        # Approval-time record: recurrence escalation keys off this, not off the
+        # collector's per-pass owner resolution.
+        client.hset(_HABITS_APPROVED_KEY, fp, owner)
+        approved_count = len(_memory_plus_habits_approved_fps(client) or {})
+        if approved_count > _HABITS_APPROVED_MAX:
+            for old_fp in list(_memory_plus_habits_approved_fps(client))[: approved_count - _HABITS_APPROVED_MAX]:
+                client.hdel(_HABITS_APPROVED_KEY, old_fp)
+    except Exception:
+        logger.debug("[memory_plus] habits approval record failed", exc_info=True)
     client.hdel(_HABITS_PENDING_KEY, proposal_id)
     doc_scope = "user" if ":user:" in owner else "room"
     return {

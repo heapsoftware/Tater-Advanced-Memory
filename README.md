@@ -3,7 +3,7 @@
 **Advanced Memory** (`advanced_memory`, module `advanced_memory_core`) is an enhanced replacement for Tater's stock Memory Core.
 It is a fork of the stock core ([`Tater_Shop/cores/memory_core.py`](https://github.com/TaterTotterson/Tater_Shop))
 that keeps the same architecture — background extraction from conversation history, People
-identity integration, episodic memory, profile cards — and upgrades four things:
+identity integration, episodic memory, profile cards — and upgrades six things:
 
 1. **Smarter retrieval without embeddings.** A pure-Python lexical scorer (BM25 + character
    trigrams + a built-in concept map + intent/time-of-day priors + quality prior, combined with
@@ -25,11 +25,24 @@ identity integration, episodic memory, profile cards — and upgrades four thing
    other cores' read-only history — Awareness events (`tater:automations:events:*`), the
    Automation-GA core's entity journal (`automation_ga_core:journal`), **per-person listening
    histories from the Personal Music Core** (`personal_music_core:history:v1:<person_id>`),
-   the stock Music Core's listening history (`music_core_listening_history_v1`), and recurring
-   request categories in your own chat histories — and proposes time-of-day patterns in the
-   **Habits** tab. Nothing is stored for the model until you **Approve** it (it becomes an
-   inferred fact injected with a "(likely)" marker); **Dismiss** records the pattern so it is
-   never re-proposed. A quiet home produces no proposals and costs nothing.
+   the stock Music Core's listening history (`music_core_listening_history_v1`),
+   Awareness **Face-ID presence sessions** (`awareness:face_session:*` — who is usually in
+   which room at which hour, with weekday/weekend skews), and recurring request categories
+   in your own chat histories — and proposes time-of-day patterns in the **Habits** tab.
+   Nothing is stored for the model until you **Approve** it (it becomes an inferred fact
+   injected with a "(likely)" marker); **Dismiss** records the pattern so it is never
+   re-proposed. A quiet home produces no proposals and costs nothing.
+6. **Automation suggestions from approved routines.** Approved habit patterns are tracked in a
+   recurrence registry; once a pattern has recurred enough more times (setting, default 5),
+   Advanced Memory offers to create a matching automation in your automation core — visible in
+   the Habits tab, and optionally proactively pushed via a **notification** and/or a **TTS
+   announcement** (either/or/both per user setting). Announcements route to the voice satellite
+   assigned to the room where the routine happens (e.g. the gym SAT for a 5am gym routine),
+   falling back to a user-configured default satellite. Approving a suggestion hands the request
+   **through Hydra**, which authors the automation in the automation core under its own
+   validation/review gates — nothing runs until approved there. Scope setting lets you decide
+   which patterns qualify: paired presence+action routines (`composite`, default), only
+   person-attributed routines (`person_routines`), or any approved pattern (`any_pattern`).
 
 ## Install
 
@@ -71,8 +84,13 @@ Advanced Memory can run **alongside** the stock core without disturbing it:
 6. Enable *Inferred Habits* after a few days of smart-home activity; review the Habits tab,
    approve one pattern, and confirm it injects with the "(likely)" marker; dismiss another and
    confirm it never re-appears.
-7. Stop/restart the core — shutdown is cooperative and completes within seconds.
-8. Uninstall with "Delete data" — only `advanced_memory_core:*` keys and the settings hash are
+7. Lower **Offer automations after recurrences** to 2 with **Automation suggestion channel =
+   notification**; once an approved pattern recurs, confirm the Habits tab shows an
+   "Automation:" suggestion, a notification arrives, and approving it hands the request to
+   Hydra (the automation core's review still applies). Dismissing the idea must prevent any
+   repeat offer.
+8. Stop/restart the core — shutdown is cooperative and completes within seconds.
+9. Uninstall with "Delete data" — only `advanced_memory_core:*` keys and the settings hash are
    removed; shared Tater label keys (`tater:room_label:*`, `tater:user_label:*`) are preserved.
 
 ## Retrieval quality (no-embeddings evaluation)
@@ -114,7 +132,7 @@ Benchmark on this fixture: index build ≤ 250 ms and ranking ≤ 75 ms per quer
 
 ```bash
 python3 -m py_compile cores/advanced_memory_core.py
-python3 -m pytest tests/ -q          # 88 tests incl. the evaluation harness
+python3 -m pytest tests/ -q          # 99 tests incl. the evaluation harness
 python3 reference/Tater_Shop/tools/generate_core_manifest.py --root . --name "Tater Advanced Memory"
 python3 reference/Tater_Shop/tools/validate_package.py --root . --kind core
 ```
