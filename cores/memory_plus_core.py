@@ -1,4 +1,4 @@
-"""Memory Plus — enhanced memory Core for Tater.
+"""Advanced Memory (memory_plus) — enhanced memory Core for Tater.
 
 A fork of the stock Memory Core (``cores/memory_core.py``, TaterTotterson/Tater_Shop)
 with pseudo-semantic lexical retrieval, correctable fact updates, first-run
@@ -55,7 +55,7 @@ META_KEY = "memory_plus_core:meta"
 logger = logging.getLogger("memory_plus_core")
 
 CORE_SETTINGS = {
-    "category": "Memory Plus Core Settings",
+    "category": "Advanced Memory Settings",
     "hydra_tools_require_running": False,
     "required": {
         "interval_seconds": {
@@ -220,7 +220,7 @@ CORE_SETTINGS = {
 }
 
 CORE_WEBUI_TAB = {
-    "label": "Memory+",
+    "label": "Adv Memory",
     "order": 21,
     "requires_running": False,
 }
@@ -4350,7 +4350,7 @@ def _memory_plus_conflict_status(client: Any, settings: Dict[str, Any]) -> Dict[
     warning = ""
     if stock_running and injecting:
         warning = (
-            "CONFLICT: the stock Memory Core is running and Memory+ injection is ON — "
+            "CONFLICT: the stock Memory Core is running and Advanced Memory injection is ON — "
             "both cores will inject duplicate memory context and fight over tools. "
             "For A/B testing set Inject Memory Context OFF (shadow mode); to cut over, "
             "disable the stock Memory Core."
@@ -4499,7 +4499,7 @@ def _memory_plus_recall_test(
     if not query_text:
         raise ValueError("Enter a test query.")
     if not doc_key or not doc_key.startswith(("memory_plus_core:user:", "memory_plus_core:room:")):
-        raise ValueError("Choose a stored Memory+ document to test against.")
+        raise ValueError("Choose a stored Advanced Memory document to test against.")
     target_doc = load_doc(redis_obj, doc_key, now=time.time()) if doc_key else {}
     room_doc = load_doc(redis_obj, room_key, now=time.time()) if room_key else {}
     settings = _settings(redis_obj)
@@ -4667,9 +4667,9 @@ def _memory_maintenance_action(tool_action: str, _val: Any, client: Any) -> Dict
         return {"ok": True, "message": f"Restored {restored} doc(s); skipped {skipped} key(s)."}
     if tool_action == "wipe_all":
         if _as_text(_val("wipe_confirm")).strip().upper() != "WIPE":
-            raise ValueError("Type WIPE into the confirmation field to erase all Memory+ data.")
+            raise ValueError("Type WIPE into the confirmation field to erase all Advanced Memory data.")
         removed = wipe_memory_plus_core_data()
-        return {"ok": True, "message": f"Wiped {removed} Memory+ key(s). Shared Tater label keys were kept."}
+        return {"ok": True, "message": f"Wiped {removed} Advanced Memory key(s). Shared Tater label keys were kept."}
     raise KeyError(f"Unsupported maintenance action: {tool_action}")
 
 
@@ -4684,7 +4684,7 @@ def handle_htmlui_tab_action(
     """Server-side validation for every Memory+ tab action (spec 10)."""
     client = redis_client if redis_client is not None else globals().get("redis_client")
     if client is None:
-        raise ValueError("Memory+ is not connected to Redis yet.")
+        raise ValueError("Advanced Memory is not connected to Redis yet.")
     payload = payload if isinstance(payload, dict) else {}
     values = payload.get("values") if isinstance(payload.get("values"), dict) else {}
 
@@ -4718,7 +4718,7 @@ def handle_htmlui_tab_action(
     if action == "memory_manage_doc":
         doc_key = _as_text(_val("doc_key")).strip()
         if not doc_key.startswith(("memory_plus_core:user:", "memory_plus_core:room:")):
-            raise ValueError("Select a stored Memory+ document first.")
+            raise ValueError("Select a stored Advanced Memory document first.")
         doc = load_doc(client, doc_key, now=time.time())
         changed = False
         notes = []
@@ -4770,7 +4770,7 @@ def handle_htmlui_tab_action(
             raise ValueError("Nothing to change: fill an edit, forget, or episode field.")
         return {"ok": True, "message": " ".join(notes)}
 
-    raise KeyError(f"Unsupported Memory+ tab action: {action}")
+    raise KeyError(f"Unsupported Advanced Memory tab action: {action}")
 
 
 def get_htmlui_tab_data(*, redis_client=None, **_kwargs) -> Dict[str, Any]:
@@ -4798,7 +4798,7 @@ def get_htmlui_tab_data(*, redis_client=None, **_kwargs) -> Dict[str, Any]:
             "id": "__memory_plus_overview__",
             "title": "Overview",
             "group": "overview",
-            "subtitle": conflict["warning"] or "Memory+ runs in its own namespace; see Mode above.",
+            "subtitle": conflict["warning"] or "Advanced Memory runs in its own namespace; see Mode above.",
             "sections": [
                 {
                     "label": "Status",
@@ -4895,7 +4895,7 @@ def get_htmlui_tab_data(*, redis_client=None, **_kwargs) -> Dict[str, Any]:
                 "subtitle": f"{row['scope']} doc · {row['fact_count']} fact(s)",
                 "save_action": "memory_manage_doc",
                 "save_label": "Apply Changes",
-                "save_success_text": "Memory+ document updated.",
+                "save_success_text": "Advanced Memory document updated.",
                 "settings_title": f"Manage {row['label']}",
                 "sections": sections,
             }
@@ -4906,7 +4906,7 @@ def get_htmlui_tab_data(*, redis_client=None, **_kwargs) -> Dict[str, Any]:
     ]
 
     return {
-        "summary": "Memory+: corrected facts, episodes, recall testing, and maintenance in this core's own namespace.",
+        "summary": "Advanced Memory: corrected facts, episodes, recall testing, and maintenance in this core's own namespace.",
         "stats": [
             {"label": "People docs", "value": len(user_rows)},
             {"label": "Room docs", "value": len(room_rows)},
@@ -4917,7 +4917,7 @@ def get_htmlui_tab_data(*, redis_client=None, **_kwargs) -> Dict[str, Any]:
         "empty_message": "No memory documents yet — facts appear after conversations are processed.",
         "ui": {
             "kind": "settings_manager",
-            "title": "Memory+ Manager",
+            "title": "Advanced Memory Manager",
             "default_tab": "overview",
             "manager_tabs": [
                 {
@@ -4968,7 +4968,7 @@ def get_htmlui_tab_data(*, redis_client=None, **_kwargs) -> Dict[str, Any]:
                             {"value": "import_stock", "label": "Import From Stock Memory Core"},
                             {"value": "export_backup", "label": "Export Backup JSON (file)"},
                             {"value": "restore_backup", "label": "Restore Backup JSON"},
-                            {"value": "wipe_all", "label": "Wipe All Memory+ Data"},
+                            {"value": "wipe_all", "label": "Wipe All Advanced Memory Data"},
                         ],
                     },
                     {
@@ -7148,7 +7148,7 @@ def _memory_plus_conflict_warning(redis_obj: Any) -> str:
         return ""
     return (
         "The stock Memory Core is also running. Both cores will inject memory context unless "
-        "Memory Plus shadow mode (inject_context off) or the stock core is disabled."
+        "Advanced Memory (memory_plus_core) shadow mode (inject_context off) or the stock core is disabled."
     )
 
 

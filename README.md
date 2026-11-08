@@ -1,6 +1,6 @@
-# Tater Memory Plus Core
+# Tater Advanced Memory
 
-**Memory Plus Core** (`memory_plus`) is an enhanced replacement for Tater's stock Memory Core.
+**Advanced Memory** (`memory_plus`) is an enhanced replacement for Tater's stock Memory Core.
 It is a fork of the stock core ([`Tater_Shop/cores/memory_core.py`](https://github.com/TaterTotterson/Tater_Shop))
 that keeps the same architecture — background extraction from conversation history, People
 identity integration, episodic memory, profile cards — and upgrades four things:
@@ -10,7 +10,7 @@ identity integration, episodic memory, profile cards — and upgrades four thing
    pseudo-relevance feedback and MMR diversity) decides which facts and episodes to inject for
    the current turn. No vector database, no network, ~ms-scale scoring.
 2. **Correctable facts.** Stock's confidence ratchet can make a stale fact nearly impossible to
-   replace. Memory+ implements a `pending_alt` rule: a differing value replaces the stored one
+   replace. Advanced Memory implements a `pending_alt` rule: a differing value replaces the stored one
    on correction, after two sightings of the same alternative, when confidence is close, or
    when the fact is old — keeping the previous value in a `previous` history (max 3).
 3. **First-run backfill & import.** New scopes extract a bounded history window on first
@@ -25,22 +25,22 @@ identity integration, episodic memory, profile cards — and upgrades four thing
 ## Install
 
 1. Add the raw manifest URL of this repository to Tater under **Cores → Repositories**:
-   `https://raw.githubusercontent.com/<user>/<repo>/main/core_manifest.json`
-2. Install **Memory Plus Core** from the Shop list and configure it under its settings category
-   (**Memory Plus Core Settings**).
-3. Start the core. Facts appear in the **Memory+** tab as conversation history is processed.
+   `https://raw.githubusercontent.com/heapsoftware/Tater-Advanced-Memory/main/core_manifest.json`
+2. Install **Advanced Memory** from the Shop list and configure it under its settings category
+   (**Advanced Memory Settings**).
+3. Start the core. Facts appear in the **Adv Memory** tab as conversation history is processed.
 
 > ⚠️ Tater extensions run **in-process and unsandboxed** inside your Tater installation. They
 > have access to Tater's Redis, filesystem, and network. Only install code from repositories
-> you trust. Memory+ stores all data in Tater's own Redis under the `memory_plus_core:*`
+> you trust. Advanced Memory stores all data in Tater's own Redis under the `memory_plus_core:*`
 > namespace and speaks to your configured LLM provider; it does not send data anywhere else.
 
 ## Coexisting with the stock Memory Core (A/B testing)
 
-Memory+ can run **alongside** the stock core without disturbing it:
+Advanced Memory can run **alongside** the stock core without disturbing it:
 
 - **Shadow mode** (default path for evaluation): leave the stock core running and set
-  **Inject Memory Context OFF** in Memory+ settings. Memory+ still extracts, stores, and
+  **Inject Memory Context OFF** in Advanced Memory settings. Advanced Memory still extracts, stores, and
   consolidates, but injects nothing and does not claim `memory_add`/`memory_remove`, so the
   stock core remains the injected memory and tool owner.
 - Use the **Recall Tester** tab against real queries to compare with what the stock core
@@ -95,7 +95,7 @@ Benchmark on this fixture: index build ≤ 250 ms and ranking ≤ 75 ms per quer
   added via `custom_synonyms`.
 - Episodes and profile cards depend on the extraction LLM following the schema; malformed
   output is dropped, never guessed.
-- Memory+ is intentionally a fork of the stock schema, so `Import From Stock Memory Core`
+- Advanced Memory is intentionally a fork of the stock schema, so `Import From Stock Memory Core`
   only copies user/room facts and identity docs — it does not migrate stock retrieval caches.
 
 ## Development
@@ -103,7 +103,7 @@ Benchmark on this fixture: index build ≤ 250 ms and ranking ≤ 75 ms per quer
 ```bash
 python3 -m py_compile cores/memory_plus_core.py
 python3 -m pytest tests/ -q          # 79 tests incl. the evaluation harness
-python3 reference/Tater_Shop/tools/generate_core_manifest.py --root . --name "Tater Memory Plus"
+python3 reference/Tater_Shop/tools/generate_core_manifest.py --root . --name "Tater Advanced Memory"
 python3 reference/Tater_Shop/tools/validate_package.py --root . --kind core
 ```
 
