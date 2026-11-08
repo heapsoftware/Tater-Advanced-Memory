@@ -23,12 +23,13 @@ identity integration, episodic memory, profile cards — and upgrades four thing
    and why (per-signal score breakdown).
 5. **Inferred habits (opt-in).** With *Inferred Habits* enabled, a nightly, zero-LLM pass mines
    other cores' read-only history — Awareness events (`tater:automations:events:*`), the
-   Automation-GA core's entity journal (`automation_ga_core:journal`), music listening history
-   (`music_core_listening_history_v1`), and recurring request categories in your own chat
-   histories — and proposes time-of-day patterns in the **Habits** tab. Nothing is stored for
-   the model until you **Approve** it (it becomes an inferred fact injected with a "(likely)"
-   marker); **Dismiss** records the pattern so it is never re-proposed. A quiet home produces
-   no proposals and costs nothing.
+   Automation-GA core's entity journal (`automation_ga_core:journal`), **per-person listening
+   histories from the Personal Music Core** (`personal_music_core:history:v1:<person_id>`),
+   the stock Music Core's listening history (`music_core_listening_history_v1`), and recurring
+   request categories in your own chat histories — and proposes time-of-day patterns in the
+   **Habits** tab. Nothing is stored for the model until you **Approve** it (it becomes an
+   inferred fact injected with a "(likely)" marker); **Dismiss** records the pattern so it is
+   never re-proposed. A quiet home produces no proposals and costs nothing.
 
 ## Install
 

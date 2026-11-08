@@ -37,7 +37,7 @@ except Exception:  # pragma: no cover - python-dotenv ships with Tater.
     def load_dotenv(*_args, **_kwargs) -> bool:
         return False
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 MIN_TATER_VERSION = "187"
 CORE_DESCRIPTION = (
     "Enhanced memory: episodic recall, smart lexical retrieval, profile cards, nightly consolidation."
@@ -214,9 +214,10 @@ CORE_SETTINGS = {
             "type": "checkbox",
             "default": False,
             "description": (
-                "Nightly, no-LLM pattern mining of Awareness events, Automation-GA journal, music "
-                "history and chat routines. Patterns sit in the Advanced Memory tab's Habits tab "
-                "until you approve them; approved habits inject as '(likely)' facts."
+                "Nightly, no-LLM pattern mining of Awareness events, the Automation-GA entity "
+                "journal, Personal Music Core + Music Core listening history, and chat request "
+                "routines. Patterns sit in the Advanced Memory tab's Habits tab until you "
+                "approve them; approved habits inject as '(likely)' facts."
             ),
         },
     },
@@ -4376,6 +4377,8 @@ _HABITS_CHAT_CATEGORIES: Dict[str, Tuple[str, ...]] = {
 
 _HABITS_GA_JOURNAL_KEY = "automation_ga_core:journal"
 _HABITS_MUSIC_HISTORY_KEY = "music_core_listening_history_v1"
+_HABITS_PERSONAL_MUSIC_HISTORY_PREFIX = "personal_music_core:history:v1"
+_HABITS_MUSIC_MAX_SOURCES = 12
 _HABITS_AWARENESS_EVENTS_PREFIX = "tater:automations:events:"
 
 
@@ -4527,20 +4530,18 @@ def _habits_collect_ga_journal(redis_obj) -> List[Dict[str, Any]]:
     return out
 
 
-def _habits_collect_music(redis_obj) -> List[Dict[str, Any]]:
-    """Per-person listening affinities from the Music Core's listening history."""
+def _habits_music_patterns(redis_obj, rows: Any, kind: str) -> List[Dict[str, Any]]:
+    """Shared per-person listening pattern mining over {artist/genres, played_at, person_*} rows.
+
+    `kind` labels the source ("personal_music" or stock "music"); owner resolution maps the
+    person's id (prefer exact id) or display name to a People identity doc, skipping rows
+    whose person cannot be matched — guest/unknown plays are never anyone's habit.
+
+    The fingerprint is source-independent ("music") so the same pattern held by BOTH
+    music cores dedupes to one proposal; the proposal's kind names where it came from.
+    """
     out: List[Dict[str, Any]] = []
-    if redis_obj is None:
-        return out
-    try:
-        raw = redis_obj.get(_HABITS_MUSIC_HISTORY_KEY)
-    except Exception:
-        raw = None
-    try:
-        rows = json.loads(_as_text(raw))
-    except Exception:
-        rows = None
-    if not isinstance(rows, list):
+    if redis_obj is None or not isinstance(rows, list):
         return out
     buckets: Dict[Tuple[str, str, str, str], Dict[int, List[float]]] = {}
     for row in rows[:_HABITS_MUSIC_MAX_ROWS]:
@@ -4563,7 +4564,8 @@ def _habits_collect_music(redis_obj) -> List[Dict[str, Any]]:
             _habits_hour_bucket(ts), []
         ).append(ts)
 
-    def _resolve_owner(person_name: str, person_id: str) -> str:
+    def _resolve_owner(person_name: str, person_id: str) -> Tuple[str, str]:
+        """People identity doc key + display name for a listening-history person."""
         try:
             person_rows = _people_person_rows(redis_obj)
         except Exception:
@@ -4572,18 +4574,18 @@ def _habits_collect_music(redis_obj) -> List[Dict[str, Any]]:
         wanted_name = person_name.strip().lower()
         for person in person_rows or []:
             row_id = _as_text(person.get("id")).strip()
-            row_name = _as_text(person.get("display_name")).strip().lower()
+            row_name = _as_text(person.get("display_name")).strip()
             if wanted_id and row_id == wanted_id:
-                return identity_doc_key(row_id)
-            if wanted_name and row_name == wanted_name:
-                return identity_doc_key(row_id)
-        return ""
+                return identity_doc_key(row_id), row_name
+            if wanted_name and row_name.lower() == wanted_name:
+                return identity_doc_key(row_id), row_name
+        return "", ""
 
     for (person_name, person_id, subject_kind, subject_label), per_bucket in buckets.items():
-        owner = _resolve_owner(person_name, person_id)
+        owner, display_name = _resolve_owner(person_name, person_id)
         if not owner:
             continue
-        person_label = person_name.title() if person_name else person_id
+        person_label = display_name.title() if display_name else (person_name.title() or person_id)
         for bucket, stamps in per_bucket.items():
             days = _habits_distinct_days(stamps)
             if len(stamps) < _HABITS_MIN_COUNT or days < _HABITS_MIN_DAYS:
@@ -4592,10 +4594,8 @@ def _habits_collect_music(redis_obj) -> List[Dict[str, Any]]:
             stats = {"count": len(stamps), "days": days, "bucket": _habits_bucket_label(bucket)}
             out.append(
                 {
-                    "fp": _habits_fingerprint(
-                        "music", f"{person_name}|{person_id}|{subject_label}", bucket
-                    ),
-                    "kind": "music",
+                    "fp": _habits_fingerprint("music", f"{person_name}|{person_id}|{subject_label}", bucket),
+                    "kind": kind,
                     "subject": subject,
                     "text": (
                         f"(likely) {person_label} often listens to {subject_label} between "
@@ -4606,6 +4606,53 @@ def _habits_collect_music(redis_obj) -> List[Dict[str, Any]]:
                 }
             )
     return out
+
+
+def _habits_collect_personal_music(redis_obj) -> List[Dict[str, Any]]:
+    """Patterns from the Personal Music Core's per-person listening histories
+    (personal_music_core:history:v1 and personal_music_core:history:v1:<person_id>;
+    the key suffix is the People person id)."""
+    out: List[Dict[str, Any]] = []
+    if redis_obj is None:
+        return out
+    try:
+        keys = [str(k) for k in redis_obj.keys(f"{_HABITS_PERSONAL_MUSIC_HISTORY_PREFIX}*")]
+    except Exception:
+        keys = []
+    merged_rows: List[Any] = []
+    for key in keys[:_HABITS_MUSIC_MAX_SOURCES]:
+        person_id = key[len(_HABITS_PERSONAL_MUSIC_HISTORY_PREFIX):].strip().strip(":")
+        try:
+            raw = redis_obj.get(key)
+        except Exception:
+            continue
+        try:
+            rows = json.loads(_as_text(raw))
+        except Exception:
+            continue
+        if not isinstance(rows, list):
+            continue
+        for row in rows[:_HABITS_MUSIC_MAX_ROWS]:
+            # Household history rows may not name a person; the scoped key is the truth.
+            if isinstance(row, dict) and person_id and not _as_text(row.get("person_id")).strip():
+                row = {**row, "person_id": person_id}
+            merged_rows.append(row)
+    return _habits_music_patterns(redis_obj, merged_rows, "personal_music")
+
+
+def _habits_collect_music(redis_obj) -> List[Dict[str, Any]]:
+    """Patterns from the stock Music Core's single listening history (fallback)."""
+    if redis_obj is None:
+        return []
+    try:
+        raw = redis_obj.get(_HABITS_MUSIC_HISTORY_KEY)
+    except Exception:
+        raw = None
+    try:
+        rows = json.loads(_as_text(raw))
+    except Exception:
+        rows = None
+    return _habits_music_patterns(redis_obj, rows, "music")
 
 
 def _habits_collect_chat_routines(redis_obj) -> List[Dict[str, Any]]:
@@ -4763,6 +4810,7 @@ def _memory_plus_habits_run(redis_obj, settings: Dict[str, Any], *, now_ts: floa
     for name, collector in (
         ("awareness", _habits_collect_awareness_events),
         ("ga_journal", _habits_collect_ga_journal),
+        ("personal_music", _habits_collect_personal_music),
         ("music", _habits_collect_music),
         ("chat_routines", _habits_collect_chat_routines),
     ):

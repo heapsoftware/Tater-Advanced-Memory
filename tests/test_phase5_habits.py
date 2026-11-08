@@ -115,13 +115,71 @@ def test_music_collector_maps_person(core, fake_redis_cls, monkeypatch):
             )
     r.set("music_core_listening_history_v1", json.dumps(rows))
     # No People data -> unresolvable owner -> skipped
-    assert core._habits_collect_music(fake_redis_cls()) == []
+    monkeypatch.setattr(core, "_people_person_rows", lambda redis_obj: [])
+    assert core._habits_collect_music(r) == []
     monkeypatch.setattr(
         core, "_people_person_rows", lambda redis_obj: [{"id": "p1", "display_name": "Maya"}]
     )
     out = core._habits_collect_music(r)
     assert out and out[0]["owner_doc_key"] == core.identity_doc_key("p1")
     assert "Maya" in out[0]["text"] and "Norah Jones" in out[0]["text"]
+    assert out[0]["kind"] == "music"
+    assert out[0]["fp"] == core._habits_fingerprint(
+        "music", "Maya|p1|Norah Jones", core._habits_hour_bucket(_ts_at(0, 20))
+    )
+
+
+def test_personal_music_collector_scoped_keys(core, fake_redis_cls, monkeypatch):
+    r, _ = _seed_doc(core, fake_redis_cls)
+    rows = []
+    for day in range(3):
+        for _ in range(2):
+            rows.append(
+                {"track_id": "t", "title": "Song", "artist": "Adele", "genres": ["pop"],
+                 "played_at": _ts_at(day, 20), "person_name": ""}  # row omits person; key carries it
+            )
+    r.set("personal_music_core:history:v1:p1", json.dumps(rows))
+    monkeypatch.setattr(
+        core, "_people_person_rows", lambda redis_obj: [{"id": "p1", "display_name": "Maya"}]
+    )
+    out = core._habits_collect_personal_music(r)
+    assert out and out[0]["kind"] == "personal_music"
+    assert out[0]["owner_doc_key"] == core.identity_doc_key("p1")
+    assert "Maya" in out[0]["text"] and "Adele" in out[0]["text"]
+
+    # Household history (row names no person, key is the unscoped base) -> skipped
+    r2 = fake_redis_cls()
+    r2.set("personal_music_core:history:v1", json.dumps(rows))
+    monkeypatch.setattr(
+        core, "_people_person_rows", lambda redis_obj: [{"id": "p1", "display_name": "Maya"}]
+    )
+    assert core._habits_collect_personal_music(r2) == []
+
+
+def test_both_music_cores_dedupe_to_one_proposal(core, fake_redis_cls, monkeypatch):
+    r, _ = _seed_doc(core, fake_redis_cls)
+    monkeypatch.setattr(
+        core, "_people_person_rows", lambda redis_obj: [{"id": "p1", "display_name": "Maya"}]
+    )
+
+    def rows_for():
+        return [
+            {
+                "track_id": "t", "title": "Song", "artist": "Coldplay", "genres": ["rock"],
+                "person_id": "p1", "person_name": "Maya",
+                "played_at": _ts_at(day % 3, 20),
+            }
+            for day in range(5)
+        ]
+
+    r.set("personal_music_core:history:v1:p1", json.dumps(rows_for()))
+    r.set("music_core_listening_history_v1", json.dumps(rows_for()))
+    summary = core._memory_plus_habits_run(r, {}, now_ts=NOW)
+    pending = [p for p in core._memory_plus_habits_pending(r).values() if "Coldplay" in p.get("text", "")]
+    assert summary["collectors"].get("personal_music", 0) >= 1
+    assert summary["collectors"].get("music", 0) >= 1
+    # Same person+artist+bucket in both cores -> ONE proposal (source-independent fp)
+    assert len(pending) == 1
 
 
 def test_chat_routines_collector(core, fake_redis_cls, monkeypatch):
