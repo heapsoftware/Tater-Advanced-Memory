@@ -6,7 +6,7 @@
       "id": "memory_plus",
       "name": "Advanced Memory",
       "module_key": "memory_plus_core",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "min_tater_version": "187",
       "description": "Enhanced memory: episodic recall, smart lexical retrieval, profile cards, nightly consolidation.",
       "settings_category": "Advanced Memory Settings",
@@ -18,7 +18,7 @@
         "recall"
       ],
       "entry": "cores/memory_plus_core.py",
-      "sha256": "974ca0d5ba1cf4e61dea400d5afb4df7ee2428bb9dd15f82257e15a5b81f2829"
+      "sha256": "bdf07b77e9c710e064e3c6850fe4b37f6af1b18adf89fe4f866476fdbe52e16e"
     }
   ]
 }

@@ -37,7 +37,7 @@ except Exception:  # pragma: no cover - python-dotenv ships with Tater.
     def load_dotenv(*_args, **_kwargs) -> bool:
         return False
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 MIN_TATER_VERSION = "187"
 CORE_DESCRIPTION = (
     "Enhanced memory: episodic recall, smart lexical retrieval, profile cards, nightly consolidation."
@@ -213,7 +213,11 @@ CORE_SETTINGS = {
             "label": "Inferred Habits (experimental)",
             "type": "checkbox",
             "default": False,
-            "description": "Derive low-confidence habit facts from other cores' history (stretch, phase 3).",
+            "description": (
+                "Nightly, no-LLM pattern mining of Awareness events, Automation-GA journal, music "
+                "history and chat routines. Patterns sit in the Advanced Memory tab's Habits tab "
+                "until you approve them; approved habits inject as '(likely)' facts."
+            ),
         },
     },
     "tags": TAGS,
@@ -710,6 +714,11 @@ def parse_memory_doc(raw: Any, *, now: Optional[float] = None) -> Dict[str, Any]
                 "previous": _coerce_previous(raw_fact.get("previous")),
                 "pending_alt": _coerce_pending_alt(raw_fact.get("pending_alt")),
             }
+            # §7.7 habit provenance (optional; written by the approval flow)
+            habit_fp = _as_text(raw_fact.get("habit_fp")).strip()
+            if habit_fp:
+                facts_map[fact_key]["habit_fp"] = habit_fp
+                facts_map[fact_key]["habit_kind"] = _as_text(raw_fact.get("habit_kind")).strip()
 
     return {
         "schema_version": MEMORY_PLUS_SCHEMA_VERSION,
@@ -4114,6 +4123,19 @@ def _run_memory_cycle_once(llm_client: Any, settings: Dict[str, Any]) -> Dict[st
                 consolidation_stats = _run_memory_consolidation(redis_client, settings, now_ts=cycle_start)
                 stats.update(consolidation_stats)
                 consolidation_llm_stats = _memory_plus_consolidation_run(redis_client, llm_client, settings, now_ts=cycle_start)
+        # ---- §7.7 habits: same nightly slot as consolidation, zero LLM calls ----
+        habits_stats: Dict[str, Any] = {}
+        habits_ran = False
+        try:
+            last_habits = _as_float(redis_client.hget(stats_key, "last_habits_ts"), 0.0, min_value=0.0)
+        except Exception:
+            last_habits = 0.0
+        if _as_bool(settings.get("enable_inferred_habits"), False) and cycle_start - last_habits >= 86_400:
+            habit_hour = time.localtime(cycle_start).tm_hour
+            habit_wanted_hour = _as_int(settings.get("consolidation_hour"), 3, min_value=0, max_value=23)
+            if habit_hour == habit_wanted_hour or cycle_start - last_habits >= 172_800:
+                habits_ran = True
+                habits_stats = _memory_plus_habits_run(redis_client, settings, now_ts=cycle_start)
         finished_at = time.time()
         try:
             run_count = int(float(redis_client.hget(stats_key, "run_count") or 0)) + 1
@@ -4137,6 +4159,8 @@ def _run_memory_cycle_once(llm_client: Any, settings: Dict[str, Any]) -> Dict[st
                 "consolidated_facts": str(stats.get("consolidated_facts") or 0),
                 "profile_cards": str(stats.get("profile_cards") or 0),
                 "last_consolidation_summary": json.dumps(consolidation_llm_stats, ensure_ascii=False, sort_keys=True),
+                "last_habits_ts": str(cycle_start if habits_ran else last_habits),
+                "last_habits_summary": json.dumps(habits_stats, ensure_ascii=False, sort_keys=True),
             },
         )
         return {"ok": True, **stats}
@@ -4318,6 +4342,555 @@ def wipe_memory_plus_core_data() -> int:
         return deleted_total
 
 
+# ---- §7.7 Behavior-derived habits (approval queue, default OFF) ----
+# Deterministic pattern mining over OTHER cores' read-only history. No LLM
+# calls here; owners approve patterns in the Advanced Memory tab before they
+# become source="inferred" facts (injected with a "(likely)" marker, ~0.65).
+
+_HABITS_PENDING_KEY = "memory_plus_core:habits:proposals"
+_HABITS_DISMISSED_KEY = "memory_plus_core:habits:dismissed"
+_HABITS_MAX_PENDING = 40
+_HABITS_MAX_DISMISSED = 200
+_HABITS_MIN_COUNT = 5          # occurrences of a pattern within its bucket
+_HABITS_MIN_DAYS = 3           # ... spanning at least this many distinct days
+_HABITS_BUCKET_HOURS = 4       # time-of-day granularity
+_HABITS_CONFIDENCE = 0.65
+_HABITS_AWARENESS_MAX_SOURCES = 30
+_HABITS_AWARENESS_MAX_EVENTS = 300
+_HABITS_GA_MAX_ROWS = 500
+_HABITS_MUSIC_MAX_ROWS = 400
+_HABITS_CHAT_MAX_SCOPES = 8
+_HABITS_CHAT_MAX_MESSAGES = 400
+_HABITS_CHAT_MAX_PLATFORMS = 4
+
+_HABITS_CHAT_CATEGORIES: Dict[str, Tuple[str, ...]] = {
+    "the weather": ("weather", "forecast", "umbrella", "rain", "temperature outside", "how hot", "how cold"),
+    "reminders or timers": ("remind me", "reminder", "timer", "alarm", "wake me", "countdown"),
+    "a briefing": ("briefing", "morning report", "what's on", "my day", "my schedule", "calendar"),
+    "music": ("play some", "play music", "put on", "listen to", "song", "playlist"),
+    "shopping or errands": ("shopping", "groceries", "buy", "add to list", "pick up", "errand"),
+    "the news": ("news", "headlines", "rss"),
+    "commute or traffic": ("traffic", "commute", "drive time", "how long to get"),
+    "jokes or fun": ("joke", "funny", "make me laugh", "trivia"),
+}
+
+_HABITS_GA_JOURNAL_KEY = "automation_ga_core:journal"
+_HABITS_MUSIC_HISTORY_KEY = "music_core_listening_history_v1"
+_HABITS_AWARENESS_EVENTS_PREFIX = "tater:automations:events:"
+
+
+def _habits_hour_bucket(ts: float) -> int:
+    try:
+        return int((time.localtime(float(ts)).tm_hour // _HABITS_BUCKET_HOURS) % (24 // _HABITS_BUCKET_HOURS))
+    except Exception:
+        return 0
+
+
+def _habits_bucket_label(bucket: int) -> str:
+    start = bucket * _HABITS_BUCKET_HOURS
+    end = start + _HABITS_BUCKET_HOURS
+    return f"{start:02d}:00–{end:02d}:00"
+
+
+def _habits_fingerprint(kind: str, subject: str, bucket: int) -> str:
+    raw = f"{_as_text(kind).strip().lower()}|{_as_text(subject).strip().lower()[:60]}|{int(bucket)}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _habits_distinct_days(timestamps) -> int:
+    try:
+        return len({time.localtime(float(ts)).tm_yday for ts in timestamps if ts})
+    except Exception:
+        return 0
+
+
+def _habits_parse_iso_ts(value) -> float:
+    """Parse awareness `ha_time`-style ISO timestamps; 0.0 when missing/malformed."""
+    text = _as_text(value).strip()
+    if not text:
+        return 0.0
+    if text.endswith("Z"):
+        text = text[:-1]
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _habits_collect_awareness_events(redis_obj) -> List[Dict[str, Any]]:
+    """Patterns from Awareness Core event lists (camera/motion/doorbell/presence)."""
+    out: List[Dict[str, Any]] = []
+    if redis_obj is None:
+        return out
+    try:
+        sources = [str(k) for k in redis_obj.keys(f"{_HABITS_AWARENESS_EVENTS_PREFIX}*")]
+    except Exception:
+        sources = []
+    for key in sources[:_HABITS_AWARENESS_MAX_SOURCES]:
+        source_slug = key[len(_HABITS_AWARENESS_EVENTS_PREFIX):].strip()
+        if not source_slug:
+            continue
+        try:
+            rows = redis_obj.lrange(key, 0, _HABITS_AWARENESS_MAX_EVENTS - 1) or []
+        except Exception:
+            continue
+        buckets: Dict[int, List[Tuple[float, str]]] = {}
+        for raw in rows:
+            try:
+                payload = json.loads(_as_text(raw))
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+            ts = _as_float(payload.get("ts"), 0.0, min_value=0.0) or _habits_parse_iso_ts(
+                payload.get("ha_time") or data.get("ha_time")
+            )
+            if ts <= 0.0:
+                continue
+            event_kind = _as_text(data.get("event_type")).strip() or _as_text(payload.get("type")).strip()
+            if not event_kind or event_kind == "camera_event":
+                continue
+            buckets.setdefault(_habits_hour_bucket(ts), []).append((ts, event_kind))
+        for bucket, events in buckets.items():
+            days = _habits_distinct_days([ts for ts, _ in events])
+            if len(events) < _HABITS_MIN_COUNT or days < _HABITS_MIN_DAYS:
+                continue
+            kind_counts: Dict[str, int] = {}
+            for _, kind in events:
+                kind_counts[kind] = kind_counts.get(kind, 0) + 1
+            dominant_kind = sorted(kind_counts.items(), key=lambda kv: -kv[1])[0][0]
+            area_label = source_slug.replace("_", " ").strip()
+            subject = f"{area_label} · {dominant_kind}"
+            stats = {"count": len(events), "days": days, "bucket": _habits_bucket_label(bucket)}
+            out.append(
+                {
+                    "fp": _habits_fingerprint("awareness", subject, bucket),
+                    "kind": "awareness",
+                    "subject": subject,
+                    "text": (
+                        f"(likely) There is often '{dominant_kind}' activity at '{area_label}' between "
+                        f"{_habits_bucket_label(bucket)} ({len(events)} events over {days} days)."
+                    ),
+                    "owner_doc_key": "",  # home-wide: owner chosen at approval time
+                    "stats": stats,
+                }
+            )
+    return out
+
+
+def _habits_collect_ga_journal(redis_obj) -> List[Dict[str, Any]]:
+    """Patterns from the Automation-GA core's entity-state-change journal."""
+    out: List[Dict[str, Any]] = []
+    if redis_obj is None:
+        return out
+    try:
+        raw_rows = redis_obj.lrange(_HABITS_GA_JOURNAL_KEY, 0, _HABITS_GA_MAX_ROWS - 1) or []
+    except Exception:
+        return out
+    buckets: Dict[Tuple[str, str], Dict[int, List[float]]] = {}
+    for raw in raw_rows:
+        try:
+            row = json.loads(_as_text(raw))
+        except Exception:
+            continue
+        if not isinstance(row, dict):
+            continue
+        ts = _as_float(row.get("ts"), 0.0, min_value=0.0)
+        entity = _as_text(row.get("entity")).strip()
+        new_state = _as_text(row.get("to")).strip()
+        if ts <= 0.0 or not entity or not new_state:
+            continue
+        buckets.setdefault((entity, new_state), {}).setdefault(_habits_hour_bucket(ts), []).append(ts)
+    for (entity, new_state), per_bucket in buckets.items():
+        entity_label = entity.split(".")[-1].replace("_", " ").strip()
+        state_label = new_state.replace("_", " ").strip()
+        for bucket, stamps in per_bucket.items():
+            days = _habits_distinct_days(stamps)
+            if len(stamps) < _HABITS_MIN_COUNT or days < _HABITS_MIN_DAYS:
+                continue
+            subject = f"{entity_label} turns {state_label}"
+            stats = {"count": len(stamps), "days": days, "bucket": _habits_bucket_label(bucket)}
+            out.append(
+                {
+                    "fp": _habits_fingerprint("ga_journal", subject, bucket),
+                    "kind": "ga_journal",
+                    "subject": subject,
+                    "text": (
+                        f"(likely) '{entity}' usually turns '{state_label}' between "
+                        f"{_habits_bucket_label(bucket)} ({len(stamps)} changes over {days} days)."
+                    ),
+                    "owner_doc_key": "",
+                    "stats": stats,
+                }
+            )
+    return out
+
+
+def _habits_collect_music(redis_obj) -> List[Dict[str, Any]]:
+    """Per-person listening affinities from the Music Core's listening history."""
+    out: List[Dict[str, Any]] = []
+    if redis_obj is None:
+        return out
+    try:
+        raw = redis_obj.get(_HABITS_MUSIC_HISTORY_KEY)
+    except Exception:
+        raw = None
+    try:
+        rows = json.loads(_as_text(raw))
+    except Exception:
+        rows = None
+    if not isinstance(rows, list):
+        return out
+    buckets: Dict[Tuple[str, str, str, str], Dict[int, List[float]]] = {}
+    for row in rows[:_HABITS_MUSIC_MAX_ROWS]:
+        if not isinstance(row, dict):
+            continue
+        ts = _as_float(row.get("played_at"), 0.0, min_value=0.0)
+        if ts <= 0.0:
+            continue
+        person_name = _as_text(row.get("person_name")).strip()
+        person_id = _as_text(row.get("person_id")).strip()
+        if not person_name and not person_id:
+            continue  # guest/unknown plays are not anyone's habit
+        artist = _as_text(row.get("artist")).strip() or _as_text(row.get("album_artist")).strip()
+        genres = [str(g).strip().title() for g in (row.get("genres") or []) if str(g).strip()]
+        if not artist and not genres:
+            continue
+        subject_label = artist.title() if artist else genres[0]
+        subject_kind = "artist" if artist else "genre"
+        buckets.setdefault((person_name, person_id, subject_kind, subject_label), {}).setdefault(
+            _habits_hour_bucket(ts), []
+        ).append(ts)
+
+    def _resolve_owner(person_name: str, person_id: str) -> str:
+        try:
+            person_rows = _people_person_rows(redis_obj)
+        except Exception:
+            person_rows = []
+        wanted_id = person_id.strip()
+        wanted_name = person_name.strip().lower()
+        for person in person_rows or []:
+            row_id = _as_text(person.get("id")).strip()
+            row_name = _as_text(person.get("display_name")).strip().lower()
+            if wanted_id and row_id == wanted_id:
+                return identity_doc_key(row_id)
+            if wanted_name and row_name == wanted_name:
+                return identity_doc_key(row_id)
+        return ""
+
+    for (person_name, person_id, subject_kind, subject_label), per_bucket in buckets.items():
+        owner = _resolve_owner(person_name, person_id)
+        if not owner:
+            continue
+        person_label = person_name.title() if person_name else person_id
+        for bucket, stamps in per_bucket.items():
+            days = _habits_distinct_days(stamps)
+            if len(stamps) < _HABITS_MIN_COUNT or days < _HABITS_MIN_DAYS:
+                continue
+            subject = f"{person_label} · {subject_kind} {subject_label}"
+            stats = {"count": len(stamps), "days": days, "bucket": _habits_bucket_label(bucket)}
+            out.append(
+                {
+                    "fp": _habits_fingerprint(
+                        "music", f"{person_name}|{person_id}|{subject_label}", bucket
+                    ),
+                    "kind": "music",
+                    "subject": subject,
+                    "text": (
+                        f"(likely) {person_label} often listens to {subject_label} between "
+                        f"{_habits_bucket_label(bucket)} ({len(stamps)} plays over {days} days)."
+                    ),
+                    "owner_doc_key": owner,
+                    "stats": stats,
+                }
+            )
+    return out
+
+
+def _habits_collect_chat_routines(redis_obj) -> List[Dict[str, Any]]:
+    """Recurring request categories by time of day from the chat histories this
+    core already reads (bounded; same messages extraction scans, nothing new)."""
+    out: List[Dict[str, Any]] = []
+    if redis_obj is None:
+        return out
+    buckets: Dict[Tuple[str, str], Dict[int, List[float]]] = {}
+    scopes_seen = 0
+    for platform in _resolve_enabled_platforms()[:_HABITS_CHAT_MAX_PLATFORMS]:
+        if scopes_seen >= _HABITS_CHAT_MAX_SCOPES:
+            break
+        try:
+            scope_list = _discover_scopes(platform)
+        except Exception:
+            scope_list = []
+        for history_key, _scope_id in scope_list:
+            if scopes_seen >= _HABITS_CHAT_MAX_SCOPES:
+                break
+            scopes_seen += 1
+            try:
+                blob = redis_obj.lrange(history_key, -_HABITS_CHAT_MAX_MESSAGES, -1) or []
+            except Exception:
+                continue
+            for raw in blob:
+                try:
+                    entry = json.loads(_as_text(raw))
+                except Exception:
+                    continue
+                if not isinstance(entry, dict) or _as_text(entry.get("role")).strip().lower() != "user":
+                    continue
+                text = _message_content_text(entry.get("content")).strip().lower()
+                if len(text) < 4:
+                    continue
+                try:
+                    ts = float(entry.get("timestamp") or 0.0)
+                except (TypeError, ValueError):
+                    ts = 0.0
+                if ts <= 0.0:
+                    continue
+                category = ""
+                for cat, keywords in _HABITS_CHAT_CATEGORIES.items():
+                    if any(word in text for word in keywords):
+                        category = cat
+                        break
+                if not category:
+                    continue
+                try:
+                    doc_target = _memory_user_doc_target(
+                        redis_obj=redis_obj,
+                        platform=platform,
+                        user_id=_as_text(entry.get("user_id")).strip(),
+                        display_name=_as_text(entry.get("username")).strip(),
+                        use_people_identities=False,
+                    )
+                except Exception:
+                    doc_target = {}
+                owner = _as_text(doc_target.get("doc_key")).strip()
+                if not owner:
+                    continue
+                buckets.setdefault((owner, category), {}).setdefault(_habits_hour_bucket(ts), []).append(ts)
+    for (owner, category), per_bucket in buckets.items():
+        for bucket, stamps in per_bucket.items():
+            days = _habits_distinct_days(stamps)
+            if len(stamps) < _HABITS_MIN_COUNT or days < _HABITS_MIN_DAYS:
+                continue
+            subject = f"asks about {category}"
+            stats = {"count": len(stamps), "days": days, "bucket": _habits_bucket_label(bucket)}
+            out.append(
+                {
+                    "fp": _habits_fingerprint("chat_routine", f"{owner}|{category}", bucket),
+                    "kind": "chat_routine",
+                    "subject": subject,
+                    "text": (
+                        f"(likely) The user often asks about {category} between "
+                        f"{_habits_bucket_label(bucket)} ({len(stamps)} asks over {days} days)."
+                    ),
+                    "owner_doc_key": owner,
+                    "stats": stats,
+                }
+            )
+    return out
+
+
+def _habits_normalize_owner_doc(owner_doc_key) -> str:
+    key = _as_text(owner_doc_key).strip()
+    if not (key.startswith(USER_DOC_PREFIX + ":") or key.startswith(ROOM_DOC_PREFIX + ":")):
+        return ""
+    if ":backup:" in key or ":aux:" in key:
+        return ""
+    return key
+
+
+def _memory_plus_habits_pending(redis_obj) -> Dict[str, Dict[str, Any]]:
+    try:
+        raw = redis_obj.hgetall(_HABITS_PENDING_KEY) or {}
+    except Exception:
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for proposal_id, blob in raw.items():
+        try:
+            proposal = json.loads(_as_text(blob))
+        except Exception:
+            continue
+        if isinstance(proposal, dict) and proposal.get("id"):
+            out[str(proposal_id)] = proposal
+    return out
+
+
+def _memory_plus_habits_save_pending(redis_obj, proposals: Dict[str, Dict[str, Any]]) -> None:
+    """Replace the pending set, dropping the oldest rows beyond the cap."""
+    if redis_obj is None:
+        return
+    try:
+        ranked = sorted(
+            proposals.items(),
+            key=lambda kv: _as_float((kv[1] or {}).get("created_ts"), 0.0, min_value=0.0),
+        )
+        if len(ranked) > _HABITS_MAX_PENDING:
+            ranked = ranked[-_HABITS_MAX_PENDING:]
+        pipeline_map = {
+            pid: json.dumps(proposal, ensure_ascii=False, sort_keys=True, default=str)
+            for pid, proposal in ranked
+        }
+        redis_obj.delete(_HABITS_PENDING_KEY)
+        if pipeline_map:
+            redis_obj.hset(_HABITS_PENDING_KEY, mapping=pipeline_map)
+    except Exception:
+        logger.debug("[memory_plus] habits pending save failed", exc_info=True)
+
+
+def _memory_plus_habits_dismissed_fps(redis_obj) -> Dict[str, float]:
+    try:
+        raw = redis_obj.hgetall(_HABITS_DISMISSED_KEY) or {}
+    except Exception:
+        return {}
+    out: Dict[str, float] = {}
+    for fp, stamp in raw.items():
+        text = _as_text(fp).strip()
+        if text:
+            out[text] = _as_float(stamp, 0.0, min_value=0.0)
+    return out
+
+
+def _memory_plus_habits_run(redis_obj, settings: Dict[str, Any], *, now_ts: float) -> Dict[str, Any]:
+    """One nightly habits pass: deterministic pattern mining -> pending proposals.
+
+    Never raises for collector failures (each source is guarded); an unavailable
+    source simply contributes zero. Nothing is injected directly — approved
+    patterns become inferred facts through the tab's Approve flow.
+    """
+    collected: List[Dict[str, Any]] = []
+    collector_stats: Dict[str, int] = {}
+    for name, collector in (
+        ("awareness", _habits_collect_awareness_events),
+        ("ga_journal", _habits_collect_ga_journal),
+        ("music", _habits_collect_music),
+        ("chat_routines", _habits_collect_chat_routines),
+    ):
+        try:
+            found = list(collector(redis_obj) or [])
+        except Exception:
+            logger.exception("[memory_plus] habit collector %s failed", name)
+            found = []
+        collector_stats[name] = len(found)
+        collected.extend(found)
+
+    dismissed = _memory_plus_habits_dismissed_fps(redis_obj)
+    pending = _memory_plus_habits_pending(redis_obj)
+    existing_fps = {str(p.get("fp") or "") for p in pending.values()}
+
+    # Fingerprints already approved into docs (so they are never re-proposed).
+    approved_fps: set = set()
+    for proposal in collected:
+        owner = _habits_normalize_owner_doc(proposal.get("owner_doc_key"))
+        if not owner:
+            continue
+        try:
+            doc = load_doc(redis_obj, owner, now=now_ts)
+        except Exception:
+            continue
+        for fact in (doc.get("facts") or {}).values():
+            if isinstance(fact, dict):
+                fp = _as_text(fact.get("habit_fp")).strip()
+                if fp:
+                    approved_fps.add(fp)
+
+    new_proposals: Dict[str, Dict[str, Any]] = {}
+    for proposal in collected:
+        fp = _as_text(proposal.get("fp")).strip()
+        if not fp or fp in dismissed or fp in existing_fps or fp in approved_fps or fp in new_proposals:
+            continue
+        proposal_id = f"h_{fp}"
+        proposal["id"] = proposal_id
+        proposal["created_ts"] = float(now_ts)
+        new_proposals[proposal_id] = proposal
+
+    merged = dict(pending)
+    merged.update(new_proposals)
+    _memory_plus_habits_save_pending(redis_obj, merged)
+    return {
+        "proposed": len(new_proposals),
+        "pending": len(merged),
+        "collectors": collector_stats,
+        "dismissed_total": len(dismissed),
+    }
+
+
+def _memory_habits_action(_val: Any, client: Any) -> Dict[str, Any]:
+    """Approve / dismiss / keep pending habit patterns (server-validated)."""
+    proposal_id = _as_text(_val("habit_id")).strip()
+    if not proposal_id:
+        raise ValueError("Choose a pending habit pattern first.")
+    pending = _memory_plus_habits_pending(client)
+    proposal = pending.get(proposal_id)
+    if not isinstance(proposal, dict):
+        raise KeyError(f"Unknown habit proposal: {proposal_id}")
+
+    decision = _as_text(_val("habit_decision")).strip().lower() or "approve"
+    if decision not in {"approve", "dismiss", "keep"}:
+        raise ValueError("Habit decision must be approve, dismiss, or keep.")
+
+    if decision == "dismiss":
+        fp = _as_text(proposal.get("fp")).strip()
+        if fp:
+            dismissed = _memory_plus_habits_dismissed_fps(client)
+            dismissed[fp] = time.time()
+            if len(dismissed) > _HABITS_MAX_DISMISSED:
+                oldest = sorted(dismissed.items(), key=lambda kv: kv[1])[: len(dismissed) - _HABITS_MAX_DISMISSED]
+                for old_fp, _stamp in oldest:
+                    dismissed.pop(old_fp, None)
+                    try:
+                        client.hdel(_HABITS_DISMISSED_KEY, old_fp)
+                    except Exception:
+                        logger.debug("[memory_plus] habits dismissal trim failed", exc_info=True)
+            try:
+                client.hset(_HABITS_DISMISSED_KEY, mapping={fp: f"{time.time():.3f}"})
+            except Exception:
+                logger.debug("[memory_plus] habits dismissal save failed", exc_info=True)
+        client.hdel(_HABITS_PENDING_KEY, proposal_id)
+        return {
+            "ok": True,
+            "message": f"Dismissed '{proposal.get('subject') or proposal_id}' — it will not be re-proposed.",
+        }
+
+    if decision == "keep":
+        return {"ok": True, "message": f"Kept '{proposal.get('subject') or proposal_id}' pending."}
+
+    owner = _habits_normalize_owner_doc(_val("habit_owner_doc"))
+    if not owner:
+        raise ValueError("Choose which person's memory (or room doc) this habit belongs to before approving.")
+    now_ts = time.time()
+    doc = load_doc(client, owner, now=now_ts)
+    fp = _as_text(proposal.get("fp")).strip()
+    fact_key = normalize_fact_key(f"habit_{fp}")
+    observation = {
+        "candidate_key": fact_key,
+        "value": _as_text(proposal.get("text")).strip(),
+        "confidence": _HABITS_CONFIDENCE,
+        "category": "behavioral_patterns",
+        "source": "inferred",
+        "evidence": [f"habits:{proposal_id}"],
+    }
+    if not merge_observation(
+        doc, observation, min_confidence=0.5, default_ttl_sec=0, allow_new_keys=True, now=now_ts
+    ):
+        raise ValueError("The habit value was rejected by the fact merge rules.")
+    fact = (doc.get("facts") or {}).get(fact_key)
+    if isinstance(fact, dict):
+        fact["habit_fp"] = fp
+        fact["habit_kind"] = _as_text(proposal.get("kind")).strip()
+    save_doc(client, owner, doc, now=now_ts)
+    client.hdel(_HABITS_PENDING_KEY, proposal_id)
+    doc_scope = "user" if ":user:" in owner else "room"
+    return {
+        "ok": True,
+        "message": (
+            f"Approved habit into {_memory_plus_doc_label(owner, doc_scope)}: stored as an inferred fact "
+            f"(injected with a '(likely)' marker)."
+        ),
+    }
+
+
+
 # ---- WebUI tab (spec 10): overview, people/rooms data, recall tester, maintenance ----
 
 _MEMORY_UI_EXPORT_DIR = "agent_lab/memory_plus_core_exports"
@@ -4387,6 +4960,9 @@ def _memory_plus_stats_snapshot(client: Any) -> Dict[str, Any]:
         "updated_facts": _safe_int(stats.get("updated_facts"), 0, min_value=0),
         "last_consolidation": _ts("last_consolidation_ts"),
         "consolidation_summary": _as_text(stats.get("last_consolidation_summary")).strip() or "{}",
+        "last_habits": _ts("last_habits_ts"),
+        "habits_summary": _as_text(stats.get("last_habits_summary")).strip() or "{}",
+        "habits_pending": len(_memory_plus_habits_pending(client)),
         "last_error": _as_text(stats.get("last_error")).strip(),
     }
 
@@ -4770,6 +5346,8 @@ def handle_htmlui_tab_action(
             raise ValueError("Nothing to change: fill an edit, forget, or episode field.")
         return {"ok": True, "message": " ".join(notes)}
 
+    if action == "memory_habits":
+        return _memory_habits_action(_val, client)
     raise KeyError(f"Unsupported Advanced Memory tab action: {action}")
 
 
@@ -4785,13 +5363,82 @@ def get_htmlui_tab_data(*, redis_client=None, **_kwargs) -> Dict[str, Any]:
     episode_total = sum(len(row["episodes"]) for row in user_rows)
 
     error_line = f"\nLast error: {stats['last_error']}" if stats.get("last_error") else ""
+    doc_options = [
+        {"value": row["doc_key"], "label": f"{row['scope']}: {row['label']} ({row['fact_count']} facts)"}
+        for row in doc_rows
+    ]
+    habits_forms: List[Dict[str, Any]] = []
+    for habit_id, proposal in sorted(_memory_plus_habits_pending(client).items()):
+        stats_bits = proposal.get("stats") if isinstance(proposal.get("stats"), dict) else {}
+        habit_text = _memory_plus_sanitize_text(
+            _as_text(proposal.get("text")), 600
+        )
+        owner_value = _as_text(proposal.get("owner_doc_key")).strip()
+        owner_options = [{"value": "", "label": "(choose person / room doc)"}] + doc_options
+        habits_forms.append(
+            {
+                "id": f"habit:{habit_id}",
+                "title": "Habit Pattern",
+                "group": "habits",
+                "subtitle": (
+                    f"{_as_text(proposal.get('kind')).strip() or 'pattern'} · "
+                    f"{_as_text(stats_bits.get('bucket')) or '—'} · "
+                    f"{_as_text(stats_bits.get('count')) or '?'} occurrences"
+                ),
+                "save_action": "memory_habits",
+                "save_label": "Record Decision",
+                "save_success_text": "Habit decision recorded.",
+                "settings_title": "Habit Pattern",
+                "sections": [
+                    {
+                        "label": "Pattern",
+                        "fields": [
+                            {
+                                "key": "habit_text_view",
+                                "label": "Proposed Habit",
+                                "type": "textarea",
+                                "value": habit_text,
+                                "read_only": True,
+                            }
+                        ],
+                    },
+                    {
+                        "label": "Decision",
+                        "inline": True,
+                        "fields": [
+                            {"key": "habit_id", "label": "Proposal", "type": "hidden", "value": habit_id},
+                            {
+                                "key": "habit_decision",
+                                "label": "Decision",
+                                "type": "select",
+                                "value": "approve",
+                                "options": [
+                                    {"value": "approve", "label": "Approve (store as inferred fact)"},
+                                    {"value": "dismiss", "label": "Dismiss (never re-propose)"},
+                                    {"value": "keep", "label": "Keep Pending"},
+                                ],
+                            },
+                            {
+                                "key": "habit_owner_doc",
+                                "label": "Belongs To",
+                                "type": "select",
+                                "value": owner_value,
+                                "options": owner_options,
+                                "description": "Required for Approve. Home-wide patterns are approved onto one person/room doc.",
+                            },
+                        ],
+                    },
+                ],
+            }
+        )
     overview_text = (
         f"Mode: {conflict['mode']}\n"
         f"Stock Memory Core running: {'yes' if conflict['stock_running'] else 'no'}\n"
         f"People docs: {len(user_rows)} · Room docs: {len(room_rows)} · Facts: {fact_total} · Episodes: {episode_total}\n"
         f"Last extraction run: {stats['last_run']} (processed {stats['processed']}, updated {stats['updated_facts']} facts)\n"
         f"Last consolidation: {stats['last_consolidation']}\n"
-        f"Consolidation summary: {stats['consolidation_summary']}{error_line}"
+        f"Consolidation summary: {stats['consolidation_summary']}\n"
+        f"Last habits pass: {stats['last_habits']} · Pending patterns: {stats['habits_pending']}{error_line}"
     )
     forms: List[Dict[str, Any]] = [
         {
@@ -4900,11 +5547,7 @@ def get_htmlui_tab_data(*, redis_client=None, **_kwargs) -> Dict[str, Any]:
                 "sections": sections,
             }
         )
-    doc_options = [
-        {"value": row["doc_key"], "label": f"{row['scope']}: {row['label']} ({row['fact_count']} facts)"}
-        for row in doc_rows
-    ]
-
+    forms.extend(habits_forms)
     return {
         "summary": "Advanced Memory: corrected facts, episodes, recall testing, and maintenance in this core's own namespace.",
         "stats": [
@@ -4912,6 +5555,7 @@ def get_htmlui_tab_data(*, redis_client=None, **_kwargs) -> Dict[str, Any]:
             {"label": "Room docs", "value": len(room_rows)},
             {"label": "Facts", "value": fact_total},
             {"label": "Episodes", "value": episode_total},
+            {"label": "Habit patterns pending", "value": stats["habits_pending"]},
             {"label": "Mode", "value": conflict["mode"]},
         ],
         "empty_message": "No memory documents yet — facts appear after conversations are processed.",
@@ -4944,6 +5588,13 @@ def get_htmlui_tab_data(*, redis_client=None, **_kwargs) -> Dict[str, Any]:
                     "selector": True,
                     "selector_label": "Select Room",
                     "empty_message": "No room documents yet.",
+                },
+                {
+                    "key": "habits",
+                    "label": "Habits",
+                    "source": "items",
+                    "item_group": "habits",
+                    "empty_message": "No pending habit patterns. Enable 'Inferred Habits' and let the nightly pass run.",
                 },
                 {
                     "key": "tools",
