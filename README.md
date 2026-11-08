@@ -21,6 +21,14 @@ identity integration, episodic memory, profile cards — and upgrades four thing
    default, LLM-proposed nightly consolidation runs behind all-or-nothing validation with
    rotating backups, and a **Recall Tester** in the WebUI shows exactly what would be injected
    and why (per-signal score breakdown).
+5. **Inferred habits (opt-in).** With *Inferred Habits* enabled, a nightly, zero-LLM pass mines
+   other cores' read-only history — Awareness events (`tater:automations:events:*`), the
+   Automation-GA core's entity journal (`automation_ga_core:journal`), music listening history
+   (`music_core_listening_history_v1`), and recurring request categories in your own chat
+   histories — and proposes time-of-day patterns in the **Habits** tab. Nothing is stored for
+   the model until you **Approve** it (it becomes an inferred fact injected with a "(likely)"
+   marker); **Dismiss** records the pattern so it is never re-proposed. A quiet home produces
+   no proposals and costs nothing.
 
 ## Install
 
@@ -59,8 +67,11 @@ Advanced Memory can run **alongside** the stock core without disturbing it:
 4. Cutover; exercise `memory_add` / `memory_remove` / `memory_recall` by voice and WebUI.
 5. State a fact, contradict it later; confirm the new value wins and the old value is kept in
    `previous` (visible after a forget/edit cycle or in the facts table).
-6. Stop/restart the core — shutdown is cooperative and completes within seconds.
-7. Uninstall with "Delete data" — only `memory_plus_core:*` keys and the settings hash are
+6. Enable *Inferred Habits* after a few days of smart-home activity; review the Habits tab,
+   approve one pattern, and confirm it injects with the "(likely)" marker; dismiss another and
+   confirm it never re-appears.
+7. Stop/restart the core — shutdown is cooperative and completes within seconds.
+8. Uninstall with "Delete data" — only `memory_plus_core:*` keys and the settings hash are
    removed; shared Tater label keys (`tater:room_label:*`, `tater:user_label:*`) are preserved.
 
 ## Retrieval quality (no-embeddings evaluation)
@@ -102,7 +113,7 @@ Benchmark on this fixture: index build ≤ 250 ms and ranking ≤ 75 ms per quer
 
 ```bash
 python3 -m py_compile cores/memory_plus_core.py
-python3 -m pytest tests/ -q          # 79 tests incl. the evaluation harness
+python3 -m pytest tests/ -q          # 88 tests incl. the evaluation harness
 python3 reference/Tater_Shop/tools/generate_core_manifest.py --root . --name "Tater Advanced Memory"
 python3 reference/Tater_Shop/tools/validate_package.py --root . --kind core
 ```
