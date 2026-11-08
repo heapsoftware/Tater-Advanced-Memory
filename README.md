@@ -1,6 +1,6 @@
 # Tater Advanced Memory
 
-**Advanced Memory** (`memory_plus`) is an enhanced replacement for Tater's stock Memory Core.
+**Advanced Memory** (`advanced_memory`, module `advanced_memory_core`) is an enhanced replacement for Tater's stock Memory Core.
 It is a fork of the stock core ([`Tater_Shop/cores/memory_core.py`](https://github.com/TaterTotterson/Tater_Shop))
 that keeps the same architecture — background extraction from conversation history, People
 identity integration, episodic memory, profile cards — and upgrades four things:
@@ -40,7 +40,7 @@ identity integration, episodic memory, profile cards — and upgrades four thing
 
 > ⚠️ Tater extensions run **in-process and unsandboxed** inside your Tater installation. They
 > have access to Tater's Redis, filesystem, and network. Only install code from repositories
-> you trust. Advanced Memory stores all data in Tater's own Redis under the `memory_plus_core:*`
+> you trust. Advanced Memory stores all data in Tater's own Redis under the `advanced_memory_core:*`
 > namespace and speaks to your configured LLM provider; it does not send data anywhere else.
 
 ## Coexisting with the stock Memory Core (A/B testing)
@@ -71,7 +71,7 @@ Advanced Memory can run **alongside** the stock core without disturbing it:
    approve one pattern, and confirm it injects with the "(likely)" marker; dismiss another and
    confirm it never re-appears.
 7. Stop/restart the core — shutdown is cooperative and completes within seconds.
-8. Uninstall with "Delete data" — only `memory_plus_core:*` keys and the settings hash are
+8. Uninstall with "Delete data" — only `advanced_memory_core:*` keys and the settings hash are
    removed; shared Tater label keys (`tater:room_label:*`, `tater:user_label:*`) are preserved.
 
 ## Retrieval quality (no-embeddings evaluation)
@@ -112,12 +112,12 @@ Benchmark on this fixture: index build ≤ 250 ms and ranking ≤ 75 ms per quer
 ## Development
 
 ```bash
-python3 -m py_compile cores/memory_plus_core.py
+python3 -m py_compile cores/advanced_memory_core.py
 python3 -m pytest tests/ -q          # 88 tests incl. the evaluation harness
 python3 reference/Tater_Shop/tools/generate_core_manifest.py --root . --name "Tater Advanced Memory"
 python3 reference/Tater_Shop/tools/validate_package.py --root . --kind core
 ```
 
 The manifest (`core_manifest.json`) is generated — do not hand-edit it. Regenerate it after
-every source change and bump `__version__` in `cores/memory_plus_core.py` whenever users
+every source change and bump `__version__` in `cores/advanced_memory_core.py` whenever users
 should receive an update.

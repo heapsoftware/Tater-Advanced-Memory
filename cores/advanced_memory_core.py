@@ -1,4 +1,4 @@
-"""Advanced Memory (memory_plus) — enhanced memory Core for Tater.
+"""Advanced Memory (advanced_memory) — enhanced memory Core for Tater.
 
 A fork of the stock Memory Core (``cores/memory_core.py``, TaterTotterson/Tater_Shop)
 with pseudo-semantic lexical retrieval, correctable fact updates, first-run
@@ -37,22 +37,22 @@ except Exception:  # pragma: no cover - python-dotenv ships with Tater.
     def load_dotenv(*_args, **_kwargs) -> bool:
         return False
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 MIN_TATER_VERSION = "187"
 CORE_DESCRIPTION = (
     "Enhanced memory: episodic recall, smart lexical retrieval, profile cards, nightly consolidation."
 )
 TAGS = ["memory", "personalization", "recall"]
 
-SETTINGS_KEY = "memory_plus_core_settings"
-RUNNING_KEY = "memory_plus_core_running"
-USER_DOC_PREFIX = "memory_plus_core:user"
-ROOM_DOC_PREFIX = "memory_plus_core:room"
-CURSOR_PREFIX = "memory_plus_core:cursor"
-BACKUP_PREFIX = "memory_plus_core:backup"
-META_KEY = "memory_plus_core:meta"
+SETTINGS_KEY = "advanced_memory_core_settings"
+RUNNING_KEY = "advanced_memory_core_running"
+USER_DOC_PREFIX = "advanced_memory_core:user"
+ROOM_DOC_PREFIX = "advanced_memory_core:room"
+CURSOR_PREFIX = "advanced_memory_core:cursor"
+BACKUP_PREFIX = "advanced_memory_core:backup"
+META_KEY = "advanced_memory_core:meta"
 
-logger = logging.getLogger("memory_plus_core")
+logger = logging.getLogger("advanced_memory_core")
 
 CORE_SETTINGS = {
     "category": "Advanced Memory Settings",
@@ -250,12 +250,12 @@ from typing import Any, Dict, List, Optional
 
 
 MEMORY_PLUS_SCHEMA_VERSION = 2
-MEMORY_PLUS_USER_PREFIX = "memory_plus_core:user"
-MEMORY_PLUS_ROOM_PREFIX = "memory_plus_core:room"
-MEMORY_PLUS_CURSOR_PREFIX = "memory_plus_core:cursor"
+MEMORY_PLUS_USER_PREFIX = "advanced_memory_core:user"
+MEMORY_PLUS_ROOM_PREFIX = "advanced_memory_core:room"
+MEMORY_PLUS_CURSOR_PREFIX = "advanced_memory_core:cursor"
 MEMORY_PLUS_IDENTITY_DOC_PLATFORM = "identity"
-MEMORY_PLUS_IDENTITY_ALIAS_PREFIX = "memory_plus_core:identity_alias"
-MEMORY_PLUS_IDENTITY_NAME_PREFIX = "memory_plus_core:identity_name"
+MEMORY_PLUS_IDENTITY_ALIAS_PREFIX = "advanced_memory_core:identity_alias"
+MEMORY_PLUS_IDENTITY_NAME_PREFIX = "advanced_memory_core:identity_name"
 
 _SEGMENT_RE = re.compile(r"[^a-z0-9_.:\-]+")
 _FACT_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -1548,10 +1548,10 @@ _SENSITIVE_FACT_PARTS = (
 
 def _memory_aux_key(kind: str, owner_doc_key: str) -> str:
     owner = _as_text(owner_doc_key).strip()
-    if owner.startswith("memory_plus_core:"):
+    if owner.startswith("advanced_memory_core:"):
         owner = owner[4:]
     owner = owner or "unknown"
-    return f"memory_plus_core:aux:{normalize_segment(kind, default='aux')}:{owner}"
+    return f"advanced_memory_core:aux:{normalize_segment(kind, default='aux')}:{owner}"
 
 
 def _memory_load_json(redis_obj: Any, key: str, default: Dict[str, Any]) -> Dict[str, Any]:
@@ -1850,7 +1850,7 @@ def _run_memory_consolidation(redis_obj: Any, settings: Dict[str, Any], *, now_t
     changed_docs = 0
     changed_facts = 0
     profile_cards = 0
-    for pattern, scope in (("memory_plus_core:user:*", "user"), ("memory_plus_core:room:*", "room")):
+    for pattern, scope in (("advanced_memory_core:user:*", "user"), ("advanced_memory_core:room:*", "room")):
         try:
             keys = list(redis_obj.scan_iter(match=pattern, count=300))
         except Exception:
@@ -1875,7 +1875,7 @@ def _run_memory_consolidation(redis_obj: Any, settings: Dict[str, Any], *, now_t
                     )
                     profile_cards += 1
             except Exception:
-                logger.exception("[memory_plus_core] consolidation failed for %s", key)
+                logger.exception("[advanced_memory_core] consolidation failed for %s", key)
     return {"consolidated_docs": changed_docs, "consolidated_facts": changed_facts, "profile_cards": profile_cards}
 
 
@@ -1891,14 +1891,14 @@ def _memory_backup_doc(
     *,
     now_ts: Optional[float] = None,
 ) -> str:
-    """Snapshot a doc under memory_plus_core:backup:...; keep the newest N."""
+    """Snapshot a doc under advanced_memory_core:backup:...; keep the newest N."""
     ts_now = float(now_ts if now_ts is not None else time.time())
     tail = _as_text(doc_key).strip() or "unknown"
-    if tail.startswith("memory_plus_core:"):
-        tail = tail[len("memory_plus_core:"):]
+    if tail.startswith("advanced_memory_core:"):
+        tail = tail[len("advanced_memory_core:"):]
     tail = re.sub(r"[^A-Za-z0-9_.-]+", "_", tail)[:120]
     stamp = time.strftime("%Y%m%d", time.localtime(ts_now))
-    backup_key = f"memory_plus_core:backup:{tail}:{stamp}"
+    backup_key = f"advanced_memory_core:backup:{tail}:{stamp}"
     snapshot = {
         "schema_version": _MEMORY_AUX_SCHEMA_VERSION,
         "source_doc_key": _as_text(doc_key),
@@ -1911,7 +1911,7 @@ def _memory_backup_doc(
         try:
             existing = sorted(
                 str(raw_key or "")
-                for raw_key in redis_obj.scan_iter(match=f"memory_plus_core:backup:{tail}:*", count=200)
+                for raw_key in redis_obj.scan_iter(match=f"advanced_memory_core:backup:{tail}:*", count=200)
             )
         except Exception:
             existing = []
@@ -1922,7 +1922,7 @@ def _memory_backup_doc(
             if batch:
                 redis_obj.delete(*batch)
     except Exception:
-        logger.exception("[memory_plus_core] backup failed for %s", doc_key)
+        logger.exception("[advanced_memory_core] backup failed for %s", doc_key)
     return backup_key
 
 
@@ -2215,7 +2215,7 @@ def _memory_plus_consolidation_run(
     profile_card_max = _as_int(settings.get("profile_card_max_chars"), 600, min_value=200, max_value=2000)
     summary = {"docs": 0, "proposed": 0, "applied_docs": 0, "merges": 0, "rewrites": 0, "retired": 0, "rejected": 0}
     try:
-        keys = list(redis_obj.scan_iter(match="memory_plus_core:user:*", count=300))
+        keys = list(redis_obj.scan_iter(match="advanced_memory_core:user:*", count=300))
     except Exception:
         keys = []
     for raw_key in keys:
@@ -2236,7 +2236,7 @@ def _memory_plus_consolidation_run(
             )
             if not ok:
                 summary["rejected"] += 1
-                logger.warning("[memory_plus_core] consolidation rejected for %s: %s", key, reason)
+                logger.warning("[advanced_memory_core] consolidation rejected for %s: %s", key, reason)
                 continue
             backup_key = _memory_backup_doc(redis_obj, key, doc, now_ts=ts_now)
             applied = _memory_apply_consolidation(doc, validated, now_ts=ts_now)
@@ -2249,7 +2249,7 @@ def _memory_plus_consolidation_run(
                     save_doc(redis_obj, key, doc, now=ts_now)
             summary["docs"] += 1
         except Exception:
-            logger.exception("[memory_plus_core] LLM consolidation failed for %s", key)
+            logger.exception("[advanced_memory_core] LLM consolidation failed for %s", key)
     if dry_run:
         summary["dry_run"] = True
     return summary
@@ -2351,7 +2351,7 @@ def _memory_plus_stock_import(
             if not stock_facts:
                 continue
             summary["stock_docs"] += 1
-            ours_key = f"memory_plus_core:{scope}:{stock_key[len(stock_prefix) + 1:]}"
+            ours_key = f"advanced_memory_core:{scope}:{stock_key[len(stock_prefix) + 1:]}"
             if dry_run:
                 for fact_key, stock_fact in stock_facts.items():
                     if not isinstance(stock_fact, dict):
@@ -3759,7 +3759,7 @@ def _llm_extract_observations(
     try:
         response = asyncio.run(_call())
     except Exception as exc:
-        logger.warning("[memory_plus_core] LLM extraction failed for %s/%s: %s", platform, scope_id, exc)
+        logger.warning("[advanced_memory_core] LLM extraction failed for %s/%s: %s", platform, scope_id, exc)
         return None
 
     text = _as_text((response.get("message", {}) or {}).get("content")).strip()
@@ -3770,7 +3770,7 @@ def _llm_extract_observations(
     try:
         parsed = json.loads(blob)
     except Exception:
-        logger.warning("[memory_plus_core] Non-JSON extraction response for %s/%s; skipping write.", platform, scope_id)
+        logger.warning("[advanced_memory_core] Non-JSON extraction response for %s/%s; skipping write.", platform, scope_id)
         return {"user": [], "room": [], "user_removals": [], "room_removals": [], "user_episodes": [], "room_episodes": []}
 
     return _normalize_observation_payload(
@@ -4097,7 +4097,7 @@ def _run_memory_cycle_once(llm_client: Any, settings: Dict[str, Any]) -> Dict[st
         raise RuntimeError("Memory extraction is already running.")
     cycle_start = time.time()
     _MEMORY_TASK_STARTED_AT = cycle_start
-    stats_key = "memory_plus_core:stats"
+    stats_key = "advanced_memory_core:stats"
     try:
         _memory_plus_warn_stock_conflict(redis_client, settings)
         stats = _run_cycle(llm_client, settings) if llm_client is not None else {
@@ -4239,7 +4239,7 @@ def run(stop_event=None):
     llm_client = None
     llm_ready_logged = False
     settings_logged = False
-    logger.info("[memory_plus_core] started")
+    logger.info("[advanced_memory_core] started")
 
     while True:
         if stop_event and getattr(stop_event, "is_set", lambda: False)():
@@ -4251,15 +4251,15 @@ def run(stop_event=None):
         quiet_seconds = _as_int(settings.get("extraction_quiet_seconds"), 12, min_value=5, max_value=120)
         if not settings_logged:
             settings_logged = True
-            logger.info("[memory_plus_core] extraction interval set to %ss", interval_seconds)
+            logger.info("[advanced_memory_core] extraction interval set to %ss", interval_seconds)
         if llm_client is None:
             try:
                 llm_client = _get_primary_llm_client_from_env()
                 if not llm_ready_logged and llm_client is not None:
                     llm_ready_logged = True
-                    logger.info("[memory_plus_core] LLM client initialized")
+                    logger.info("[advanced_memory_core] LLM client initialized")
             except Exception as exc:
-                logger.warning("[memory_plus_core] failed to initialize LLM client: %s", exc)
+                logger.warning("[advanced_memory_core] failed to initialize LLM client: %s", exc)
                 llm_client = None
 
         try:
@@ -4270,14 +4270,14 @@ def run(stop_event=None):
                 or int(stats.get("updated_docs") or 0) > 0
             ):
                 logger.info(
-                    "[memory_plus_core] cycle complete: scopes=%s processed=%s facts=%s docs=%s",
+                    "[advanced_memory_core] cycle complete: scopes=%s processed=%s facts=%s docs=%s",
                     int(stats.get("scanned_scopes") or 0),
                     int(stats.get("processed_messages") or 0),
                     int(stats.get("updated_facts") or 0),
                     int(stats.get("updated_docs") or 0),
                 )
         except Exception as exc:
-            logger.exception("[memory_plus_core] cycle failed: %s", exc)
+            logger.exception("[advanced_memory_core] cycle failed: %s", exc)
 
         _wait_for_memory_work(
             interval_seconds=interval_seconds,
@@ -4286,7 +4286,7 @@ def run(stop_event=None):
             stop_event=stop_event,
         )
 
-    logger.info("[memory_plus_core] stopped")
+    logger.info("[advanced_memory_core] stopped")
 
 
 # ---- Namespace wipe (owned data only; shared tater:* label keys are left alone) ----
@@ -4304,8 +4304,8 @@ def _memory_plus_scan_keys(redis_obj: Any, pattern: str) -> List[str]:
     return keys
 
 
-def wipe_memory_plus_core_data() -> int:
-    """Delete every key this core owns (memory_plus_core:* plus its settings hash).
+def wipe_advanced_memory_core_data() -> int:
+    """Delete every key this core owns (advanced_memory_core:* plus its settings hash).
 
     Shared Tater keys (tater:room_label / tater:user_label, written by both this
     core and stock memory_core) are intentionally preserved so A/B side-by-side
@@ -4332,9 +4332,9 @@ def wipe_memory_plus_core_data() -> int:
         return removed
 
     try:
-        deleted_total += _delete_matching("memory_plus_core:*")
+        deleted_total += _delete_matching("advanced_memory_core:*")
         try:
-            deleted_total += int(redis_obj.delete("memory_plus_core_settings") or 0)
+            deleted_total += int(redis_obj.delete("advanced_memory_core_settings") or 0)
         except Exception:
             pass
         return deleted_total
@@ -4347,8 +4347,8 @@ def wipe_memory_plus_core_data() -> int:
 # calls here; owners approve patterns in the Advanced Memory tab before they
 # become source="inferred" facts (injected with a "(likely)" marker, ~0.65).
 
-_HABITS_PENDING_KEY = "memory_plus_core:habits:proposals"
-_HABITS_DISMISSED_KEY = "memory_plus_core:habits:dismissed"
+_HABITS_PENDING_KEY = "advanced_memory_core:habits:proposals"
+_HABITS_DISMISSED_KEY = "advanced_memory_core:habits:dismissed"
 _HABITS_MAX_PENDING = 40
 _HABITS_MAX_DISMISSED = 200
 _HABITS_MIN_COUNT = 5          # occurrences of a pattern within its bucket
@@ -4893,7 +4893,7 @@ def _memory_habits_action(_val: Any, client: Any) -> Dict[str, Any]:
 
 # ---- WebUI tab (spec 10): overview, people/rooms data, recall tester, maintenance ----
 
-_MEMORY_UI_EXPORT_DIR = "agent_lab/memory_plus_core_exports"
+_MEMORY_UI_EXPORT_DIR = "agent_lab/advanced_memory_core_exports"
 
 
 _MEMORY_CONFLICT_LAST_WARNED = 0.0
@@ -4906,7 +4906,7 @@ def _memory_plus_warn_stock_conflict(redis_obj: Any, settings: Dict[str, Any]) -
         status = _memory_plus_conflict_status(redis_obj, settings)
         now_ts = time.time()
         if status.get("warning") and now_ts - float(_MEMORY_CONFLICT_LAST_WARNED) >= 3600.0:
-            logger.warning("[memory_plus_core] %s", status["warning"])
+            logger.warning("[advanced_memory_core] %s", status["warning"])
             _MEMORY_CONFLICT_LAST_WARNED = now_ts
     except Exception:
         pass
@@ -4934,7 +4934,7 @@ def _memory_plus_conflict_status(client: Any, settings: Dict[str, Any]) -> Dict[
 
 def _memory_plus_doc_label(key: str, scope: str) -> str:
     tail = str(key or "").strip()
-    prefix = f"memory_plus_core:{scope}:"
+    prefix = f"advanced_memory_core:{scope}:"
     if tail.startswith(prefix):
         tail = tail[len(prefix):]
     return tail or key
@@ -4943,7 +4943,7 @@ def _memory_plus_doc_label(key: str, scope: str) -> str:
 def _memory_plus_stats_snapshot(client: Any) -> Dict[str, Any]:
     stats: Dict[str, Any] = {}
     try:
-        stats = dict(client.hgetall("memory_plus_core:stats") or {})
+        stats = dict(client.hgetall("advanced_memory_core:stats") or {})
     except Exception:
         stats = {}
 
@@ -4970,8 +4970,8 @@ def _memory_plus_stats_snapshot(client: Any) -> Dict[str, Any]:
 def _memory_plus_doc_rows(client: Any) -> List[Dict[str, Any]]:
     """One row per user/room doc, with parsed content for tables (bounded)."""
     rows: List[Dict[str, Any]] = []
-    for raw_key in _memory_plus_scan_keys(client, "memory_plus_core:user:*") + _memory_plus_scan_keys(
-        client, "memory_plus_core:room:*"
+    for raw_key in _memory_plus_scan_keys(client, "advanced_memory_core:user:*") + _memory_plus_scan_keys(
+        client, "advanced_memory_core:room:*"
     ):
         key = str(raw_key or "")
         if not key or ":backup:" in key or ":aux:" in key:
@@ -5074,7 +5074,7 @@ def _memory_plus_recall_test(
     query_text = _memory_plus_sanitize_text(query, 500)
     if not query_text:
         raise ValueError("Enter a test query.")
-    if not doc_key or not doc_key.startswith(("memory_plus_core:user:", "memory_plus_core:room:")):
+    if not doc_key or not doc_key.startswith(("advanced_memory_core:user:", "advanced_memory_core:room:")):
         raise ValueError("Choose a stored Advanced Memory document to test against.")
     target_doc = load_doc(redis_obj, doc_key, now=time.time()) if doc_key else {}
     room_doc = load_doc(redis_obj, room_key, now=time.time()) if room_key else {}
@@ -5170,7 +5170,7 @@ def _memory_maintenance_action(tool_action: str, _val: Any, client: Any) -> Dict
         )
         try:
             client.hset(
-                "memory_plus_core:stats",
+                "advanced_memory_core:stats",
                 mapping={
                     "last_consolidation_ts": str(time.time()),
                     "last_consolidation_summary": json.dumps(llm_stats, ensure_ascii=False, sort_keys=True),
@@ -5192,7 +5192,7 @@ def _memory_maintenance_action(tool_action: str, _val: Any, client: Any) -> Dict
         return {"ok": True, "message": f"Imported from stock memory core: {json.dumps(summary, ensure_ascii=False)}"}
     if tool_action == "export_backup":
         export: Dict[str, str] = {}
-        for key in _memory_plus_scan_keys(client, "memory_plus_core:*"):
+        for key in _memory_plus_scan_keys(client, "advanced_memory_core:*"):
             value = client.get(key)
             if value is not None:
                 export[str(key)] = str(value)
@@ -5220,12 +5220,12 @@ def _memory_maintenance_action(tool_action: str, _val: Any, client: Any) -> Dict
             raise ValueError(f"Backup content is not valid JSON: {exc}") from exc
         doc_map = parsed.get("documents") if isinstance(parsed.get("documents"), dict) else parsed
         if not isinstance(doc_map, dict):
-            raise ValueError("Backup JSON should map memory_plus_core:* keys to their stored values.")
+            raise ValueError("Backup JSON should map advanced_memory_core:* keys to their stored values.")
         restored = 0
         skipped = 0
         for key, doc_payload in doc_map.items():
             key = str(key or "")
-            if not key.startswith("memory_plus_core:") or key.endswith("_settings") or key.endswith(":stats"):
+            if not key.startswith("advanced_memory_core:") or key.endswith("_settings") or key.endswith(":stats"):
                 skipped += 1
                 continue
             if not isinstance(doc_payload, str):
@@ -5244,7 +5244,7 @@ def _memory_maintenance_action(tool_action: str, _val: Any, client: Any) -> Dict
     if tool_action == "wipe_all":
         if _as_text(_val("wipe_confirm")).strip().upper() != "WIPE":
             raise ValueError("Type WIPE into the confirmation field to erase all Advanced Memory data.")
-        removed = wipe_memory_plus_core_data()
+        removed = wipe_advanced_memory_core_data()
         return {"ok": True, "message": f"Wiped {removed} Advanced Memory key(s). Shared Tater label keys were kept."}
     raise KeyError(f"Unsupported maintenance action: {tool_action}")
 
@@ -5293,7 +5293,7 @@ def handle_htmlui_tab_action(
 
     if action == "memory_manage_doc":
         doc_key = _as_text(_val("doc_key")).strip()
-        if not doc_key.startswith(("memory_plus_core:user:", "memory_plus_core:room:")):
+        if not doc_key.startswith(("advanced_memory_core:user:", "advanced_memory_core:room:")):
             raise ValueError("Select a stored Advanced Memory document first.")
         doc = load_doc(client, doc_key, now=time.time())
         changed = False
@@ -5734,14 +5734,14 @@ def _memory_plus_user_name(platform: Any, user_id: Any) -> str:
             _MEMORY_USER_NAME_CACHE[cache_key] = people_name
             return people_name
         try:
-            for raw_key in redis_client.scan_iter(match="memory_plus_core:identity_name:*", count=300):
+            for raw_key in redis_client.scan_iter(match="advanced_memory_core:identity_name:*", count=300):
                 lookup_key = str(raw_key or "").strip()
                 if not lookup_key:
                     continue
                 mapped = str(redis_client.get(lookup_key) or "").strip()
                 if mapped != scope_id:
                     continue
-                identity_name = lookup_key.split("memory_plus_core:identity_name:", 1)[-1].strip()
+                identity_name = lookup_key.split("advanced_memory_core:identity_name:", 1)[-1].strip()
                 if identity_name:
                     _MEMORY_USER_NAME_CACHE[cache_key] = identity_name
                     return identity_name
@@ -5846,7 +5846,7 @@ def _memory_plus_room_display_name_from_row(row: Dict[str, Any]) -> str:
 
 
 def _memory_plus_stats() -> Dict[str, Any]:
-    raw = redis_client.hgetall("memory_plus_core:stats") or {}
+    raw = redis_client.hgetall("advanced_memory_core:stats") or {}
     def _to_float(value: Any, default: float = 0.0) -> float:
         try:
             return float(value)
@@ -7799,7 +7799,7 @@ def _memory_plus_conflict_warning(redis_obj: Any) -> str:
         return ""
     return (
         "The stock Memory Core is also running. Both cores will inject memory context unless "
-        "Advanced Memory (memory_plus_core) shadow mode (inject_context off) or the stock core is disabled."
+        "Advanced Memory (advanced_memory_core) shadow mode (inject_context off) or the stock core is disabled."
     )
 
 
@@ -7945,7 +7945,7 @@ def get_hydra_memory_context_payload(
         }
         return payload
     except Exception:
-        logger.exception("[memory_plus_core] memory context payload failed")
+        logger.exception("[advanced_memory_core] memory context payload failed")
         return {}
 
 
@@ -8043,7 +8043,7 @@ def get_hydra_system_prompt_fragments(
             return {"chat": [message], "hermes": [message], "memory_context": [message]}
         return {}
     except Exception:
-        logger.exception("[memory_plus_core] system prompt fragments failed")
+        logger.exception("[advanced_memory_core] system prompt fragments failed")
         return {}
 
 
