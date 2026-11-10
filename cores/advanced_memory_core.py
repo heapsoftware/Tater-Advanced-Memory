@@ -37,7 +37,7 @@ except Exception:  # pragma: no cover - python-dotenv ships with Tater.
     def load_dotenv(*_args, **_kwargs) -> bool:
         return False
 
-__version__ = "1.4.1"
+__version__ = "1.5.0"
 MIN_TATER_VERSION = "187"
 CORE_DESCRIPTION = (
     "Enhanced memory: episodic recall, smart lexical retrieval, profile cards, nightly consolidation."
@@ -5629,6 +5629,59 @@ def _memory_plus_doc_label(key: str, scope: str) -> str:
     return tail or key
 
 
+def _memory_plus_doc_tail(key: str, scope: str) -> Tuple[str, str, str]:
+    """Split a doc key into (raw_tail, platform, segment) for label resolution."""
+    tail = _memory_plus_doc_label(key, scope)
+    platform, sep, segment = tail.partition(":")
+    if not sep or not segment:
+        return tail, "", tail
+    return tail, platform, segment
+
+
+def _memory_plus_doc_display_name(key: str, scope: str) -> str:
+    """Human-readable name for a user/room doc; '' when no name can be resolved."""
+    tail, platform, segment = _memory_plus_doc_tail(key, scope)
+    if not platform or not segment:
+        return ""
+    try:
+        if scope == "user":
+            name = _memory_plus_user_name(platform, segment)
+        else:
+            name = _memory_plus_room_name(platform, segment)
+    except Exception:
+        return ""
+    name = _as_text(name).strip()
+    # The resolvers fall back to the raw id when nothing is known.
+    if not name or name.lower() == segment.lower():
+        return ""
+    return name
+
+
+def _memory_plus_identity_link_groups(client: Any) -> Dict[str, List[str]]:
+    """Map identity doc key -> 'platform:user_id (name)' pieces for linked accounts."""
+    groups: Dict[str, List[str]] = {}
+    for alias in list_identity_aliases(client):
+        doc_key = _as_text(alias.get("doc_key")).strip()
+        platform = _as_text(alias.get("platform")).strip()
+        user_id = _as_text(alias.get("user_id")).strip()
+        if not doc_key or not platform or not user_id:
+            continue
+        try:
+            name = _memory_plus_user_name(platform, user_id)
+        except Exception:
+            name = ""
+        name = _as_text(name).strip()
+        piece = f"{platform}:{user_id}"
+        if name and name.lower() != user_id.lower():
+            piece = f"{piece} ({name})"
+        pieces = groups.setdefault(doc_key, [])
+        if piece not in pieces:
+            pieces.append(piece)
+    for pieces in groups.values():
+        pieces.sort()
+    return groups
+
+
 def _memory_plus_stats_snapshot(client: Any) -> Dict[str, Any]:
     stats: Dict[str, Any] = {}
     try:
@@ -5659,6 +5712,7 @@ def _memory_plus_stats_snapshot(client: Any) -> Dict[str, Any]:
 def _memory_plus_doc_rows(client: Any) -> List[Dict[str, Any]]:
     """One row per user/room doc, with parsed content for tables (bounded)."""
     rows: List[Dict[str, Any]] = []
+    link_groups = _memory_plus_identity_link_groups(client)
     for raw_key in _memory_plus_scan_keys(client, "advanced_memory_core:user:*") + _memory_plus_scan_keys(
         client, "advanced_memory_core:room:*"
     ):
@@ -5716,11 +5770,19 @@ def _memory_plus_doc_rows(client: Any) -> List[Dict[str, Any]]:
                 )[:600]
             except Exception:
                 profile_card = ""
+        tail, platform, segment = _memory_plus_doc_tail(key, scope)
+        display_name = _memory_plus_doc_display_name(key, scope)
         rows.append(
             {
                 "doc_key": key,
                 "scope": scope,
-                "label": _memory_plus_doc_label(key, scope),
+                "label": display_name or tail,
+                "raw_tail": tail,
+                "platform": platform,
+                "display_name": display_name,
+                "linked_accounts": (
+                    ", ".join(link_groups.get(key, [])) if scope == "user" else ""
+                ),
                 "fact_count": len(facts),
                 "facts": fact_rows,
                 "episodes": episode_rows,
@@ -5987,7 +6049,7 @@ def handle_htmlui_tab_action(
         doc = load_doc(client, doc_key, now=time.time())
         changed = False
         notes = []
-        edit_key = _as_text(_val("edit_key")).strip()
+        edit_key = _as_text(_val("edit_fact_select") or _val("edit_key")).strip()
         if edit_key:
             fact_key = normalize_fact_key(edit_key)
             if not fact_key:
@@ -6012,10 +6074,24 @@ def handle_htmlui_tab_action(
             )
             notes.append(f"Set '{fact_key}'.")
             changed = True
-        forget_raw = _as_text(_val("forget_keys")).strip()
-        if forget_raw:
-            keys = [normalize_fact_key(part) for part in re.split(r"[,\s]+", forget_raw)]
-            keys = [part for part in keys if part]
+        forget_selected = _val("forget_facts")
+        forget_parts: List[str] = []
+        if isinstance(forget_selected, (list, tuple, set)):
+            forget_parts.extend(_as_text(part).strip() for part in forget_selected)
+        else:
+            forget_parts.extend(
+                part for part in re.split(r"[,\s]+", _as_text(forget_selected).strip()) if part
+            )
+        forget_parts.extend(
+            part for part in re.split(r"[,\s]+", _as_text(_val("forget_keys")).strip()) if part
+        )
+        forget_parts = [part for part in forget_parts if part]
+        if forget_parts:
+            keys: List[str] = []
+            for part in forget_parts:
+                normalized = normalize_fact_key(part)
+                if normalized and normalized not in keys:
+                    keys.append(normalized)
             if not keys:
                 raise ValueError("No valid fact keys to forget.")
             removed = forget_fact_keys(doc, keys)
@@ -6023,7 +6099,7 @@ def handle_htmlui_tab_action(
                 raise KeyError("None of the given fact keys exist in this document.")
             notes.append(f"Forgot {removed} fact(s).")
             changed = True
-        episode_id = _as_text(_val("forget_episode_id")).strip()
+        episode_id = _as_text(_val("forget_episode") or _val("forget_episode_id")).strip()
         if episode_id:
             removed = _memory_delete_episodes(client, doc_key, [episode_id])
             if not removed:
@@ -6032,7 +6108,7 @@ def handle_htmlui_tab_action(
         if changed:
             save_doc(client, doc_key, doc, now=time.time())
         if not notes:
-            raise ValueError("Nothing to change: fill an edit, forget, or episode field.")
+            raise ValueError("Nothing to change: pick a fact to edit, facts to forget, or an episode.")
         return {"ok": True, "message": " ".join(notes)}
 
     if action == "memory_habits":
@@ -6151,7 +6227,14 @@ def get_htmlui_tab_data(*, redis_client=None, **_kwargs) -> Dict[str, Any]:
             ],
         }
     ]
-    for row in user_rows:
+    for row in doc_rows:
+        fact_options = [
+            {
+                "value": fact["key"],
+                "label": f"{fact['key']} — {fact['value'] or '(no value)'}",
+            }
+            for fact in row["facts"]
+        ]
         sections = [
             {
                 "label": "Profile Card",
@@ -6183,27 +6266,22 @@ def get_htmlui_tab_data(*, redis_client=None, **_kwargs) -> Dict[str, Any]:
                 "fields": [
                     {"key": "doc_key", "label": "Doc", "type": "hidden", "value": row["doc_key"]},
                     {
-                        "key": "edit_key",
-                        "label": "Edit Fact Key",
-                        "type": "text",
+                        "key": "edit_fact_select",
+                        "label": "Edit Fact",
+                        "type": "select",
                         "value": "",
-                        "description": "Set/overwrite a fact (source becomes 'manual', previous value is kept).",
+                        "options": [{"value": "", "label": "(choose a fact to edit)"}] + fact_options,
+                        "description": "Pick the fact to change, enter the new value, then Apply Changes. The source becomes 'manual' and the previous value is kept.",
                     },
                     {"key": "edit_value", "label": "New Value", "type": "text", "value": ""},
                     {"key": "edit_confidence", "label": "Confidence", "type": "number", "value": 0.85, "min": 0.0, "max": 1.0},
                     {
-                        "key": "forget_keys",
-                        "label": "Forget Fact Keys",
-                        "type": "text",
-                        "value": "",
-                        "description": "Comma-separated exact keys to remove from this person.",
-                    },
-                    {
-                        "key": "forget_episode_id",
-                        "label": "Forget Episode ID",
-                        "type": "text",
-                        "value": "",
-                        "description": "Exact episode id to delete from this person.",
+                        "key": "forget_facts",
+                        "label": "Forget Facts",
+                        "type": "multiselect",
+                        "value": [],
+                        "options": fact_options,
+                        "description": "Pick one or more facts to delete, then Apply Changes.",
                     },
                 ],
             },
@@ -6219,16 +6297,32 @@ def get_htmlui_tab_data(*, redis_client=None, **_kwargs) -> Dict[str, Any]:
                             "type": "table",
                             "columns": _memory_plus_episode_table_columns(),
                             "rows": row["episodes"],
-                        }
+                        },
+                        {
+                            "key": "forget_episode",
+                            "label": "Forget Episode",
+                            "type": "select",
+                            "value": "",
+                            "options": [{"value": "", "label": "(choose an episode to delete)"}]
+                            + [
+                                {"value": episode["id"], "label": f"{episode['when']} · {episode['summary']}"}
+                                for episode in row["episodes"]
+                            ],
+                            "description": "Pick an episode to delete, then Apply Changes.",
+                        },
                     ],
                 }
             )
+        summary_rows = []
+        if row["scope"] == "user" and row["linked_accounts"]:
+            summary_rows.append({"label": "Linked accounts", "value": row["linked_accounts"]})
         forms.append(
             {
                 "id": row["doc_key"],
                 "title": row["label"],
                 "group": "person" if row["scope"] == "user" else "room_group",
-                "subtitle": f"{row['scope']} doc · {row['fact_count']} fact(s)",
+                "subtitle": f"{row['scope']} doc · {row['raw_tail']} · {row['fact_count']} fact(s)",
+                "summary_rows": summary_rows,
                 "save_action": "memory_manage_doc",
                 "save_label": "Apply Changes",
                 "save_success_text": "Advanced Memory document updated.",

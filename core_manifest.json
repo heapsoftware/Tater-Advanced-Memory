@@ -1,12 +1,12 @@
 {
   "schema": 1,
-  "name": "Tater Advanced Memory",
+  "name": "Tater Memory Plus",
   "cores": [
     {
       "id": "advanced_memory",
       "name": "Advanced Memory",
       "module_key": "advanced_memory_core",
-      "version": "1.4.1",
+      "version": "1.5.0",
       "min_tater_version": "187",
       "description": "Enhanced memory: episodic recall, smart lexical retrieval, profile cards, nightly consolidation.",
       "settings_category": "Advanced Memory Settings",
@@ -18,7 +18,7 @@
         "recall"
       ],
       "entry": "cores/advanced_memory_core.py",
-      "sha256": "77bd51675ed264f227e32518c231dc914546e2c995a166fad6a70cc53f417a63"
+      "sha256": "0daba35d93e4e9538a65ce86b1b690655c8f72c465fa3f748b3d4f4524032eb8"
     }
   ]
 }
