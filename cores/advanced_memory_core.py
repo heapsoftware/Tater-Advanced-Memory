@@ -37,7 +37,7 @@ except Exception:  # pragma: no cover - python-dotenv ships with Tater.
     def load_dotenv(*_args, **_kwargs) -> bool:
         return False
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 MIN_TATER_VERSION = "187"
 CORE_DESCRIPTION = (
     "Enhanced memory: episodic recall, smart lexical retrieval, profile cards, nightly consolidation."
@@ -5583,6 +5583,7 @@ def _memory_habits_action(_val: Any, client: Any) -> Dict[str, Any]:
 # ---- WebUI tab (spec 10): overview, people/rooms data, recall tester, maintenance ----
 
 _MEMORY_UI_EXPORT_DIR = "agent_lab/advanced_memory_core_exports"
+_MEMORY_UI_MAX_FACT_CARDS = 200
 
 
 _MEMORY_CONFLICT_LAST_WARNED = 0.0
@@ -6113,6 +6114,56 @@ def handle_htmlui_tab_action(
 
     if action == "memory_habits":
         return _memory_habits_action(_val, client)
+
+    if action == "memory_manage_fact":
+        fact_doc_key = _as_text(_val("doc_key")).strip()
+        if not fact_doc_key.startswith(("advanced_memory_core:user:", "advanced_memory_core:room:")):
+            raise ValueError("Unknown Advanced Memory document.")
+        fact_key = normalize_fact_key(_as_text(_val("fact_key")).strip())
+        if not fact_key:
+            raise ValueError("No fact selected.")
+        new_value = _val("new_value")
+        if new_value in (None, ""):
+            raise ValueError("Provide the new value to store.")
+        doc = load_doc(client, fact_doc_key, now=time.time())
+        stored_facts = doc.get("facts") if isinstance(doc.get("facts"), dict) else {}
+        if fact_key not in stored_facts:
+            raise KeyError("That fact no longer exists in this document.")
+        merge_observation(
+            doc,
+            {
+                "candidate_key": fact_key,
+                "value": new_value,
+                "confidence": _as_float(_val("confidence"), 0.85, min_value=0.0, max_value=1.0),
+                "source": "manual",
+                "supersedes": True,
+                "evidence": [],
+            },
+            min_confidence=0.0,
+            default_ttl_sec=0,
+            allow_new_keys=False,
+            now=time.time(),
+        )
+        save_doc(client, fact_doc_key, doc, now=time.time())
+        return {"ok": True, "message": f"Updated '{fact_key}'."}
+
+    if action == "memory_manage_fact_delete":
+        parts = _as_text(payload.get("id")).split("::")
+        if len(parts) != 3 or parts[0] != "fact":
+            raise KeyError("Unsupported fact card id.")
+        fact_doc_key, fact_key_raw = parts[1], parts[2]
+        if not fact_doc_key.startswith(("advanced_memory_core:user:", "advanced_memory_core:room:")):
+            raise ValueError("Unknown Advanced Memory document.")
+        fact_key = normalize_fact_key(fact_key_raw)
+        if not fact_key:
+            raise ValueError("No fact selected.")
+        doc = load_doc(client, fact_doc_key, now=time.time())
+        removed = forget_fact_keys(doc, [fact_key])
+        if not removed:
+            raise KeyError("That fact no longer exists in this document.")
+        save_doc(client, fact_doc_key, doc, now=time.time())
+        return {"ok": True, "message": f"Deleted '{fact_key}'."}
+
     raise KeyError(f"Unsupported Advanced Memory tab action: {action}")
 
 
@@ -6227,6 +6278,8 @@ def get_htmlui_tab_data(*, redis_client=None, **_kwargs) -> Dict[str, Any]:
             ],
         }
     ]
+    fact_items: List[Dict[str, Any]] = []
+    value_cap = _safe_int(_settings(client).get("value_max_chars"), 300, min_value=300, max_value=1000)
     for row in doc_rows:
         fact_options = [
             {
@@ -6266,22 +6319,12 @@ def get_htmlui_tab_data(*, redis_client=None, **_kwargs) -> Dict[str, Any]:
                 "fields": [
                     {"key": "doc_key", "label": "Doc", "type": "hidden", "value": row["doc_key"]},
                     {
-                        "key": "edit_fact_select",
-                        "label": "Edit Fact",
-                        "type": "select",
-                        "value": "",
-                        "options": [{"value": "", "label": "(choose a fact to edit)"}] + fact_options,
-                        "description": "Pick the fact to change, enter the new value, then Apply Changes. The source becomes 'manual' and the previous value is kept.",
-                    },
-                    {"key": "edit_value", "label": "New Value", "type": "text", "value": ""},
-                    {"key": "edit_confidence", "label": "Confidence", "type": "number", "value": 0.85, "min": 0.0, "max": 1.0},
-                    {
                         "key": "forget_facts",
-                        "label": "Forget Facts",
+                        "label": "Forget Facts (bulk)",
                         "type": "multiselect",
                         "value": [],
                         "options": fact_options,
-                        "description": "Pick one or more facts to delete, then Apply Changes.",
+                        "description": "Pick one or more facts to delete, then Apply Changes. To edit a single fact use the Facts tab.",
                     },
                 ],
             },
@@ -6330,7 +6373,75 @@ def get_htmlui_tab_data(*, redis_client=None, **_kwargs) -> Dict[str, Any]:
                 "sections": sections,
             }
         )
+    for row in doc_rows:
+        if len(fact_items) >= _MEMORY_UI_MAX_FACT_CARDS:
+            break
+        raw_doc = {}
+        try:
+            raw_doc = load_doc(client, row["doc_key"], now=time.time())
+        except Exception:
+            raw_doc = {}
+        raw_facts = raw_doc.get("facts") if isinstance(raw_doc.get("facts"), dict) else {}
+        for fact in row["facts"]:
+            if len(fact_items) >= _MEMORY_UI_MAX_FACT_CARDS:
+                break
+            stored = raw_facts.get(fact["key"])
+            raw_value = value_to_text(
+                stored.get("value") if isinstance(stored, dict) else fact["value"],
+                max_chars=value_cap,
+            )
+            raw_value = _memory_plus_sanitize_text(raw_value, value_cap)
+            fact_items.append(
+                {
+                    "id": f"fact::{row['doc_key']}::{fact['key']}",
+                    "title": fact["key"],
+                    "group": "fact",
+                    "subtitle": f"{row['label']} · {fact['source']} · updated {fact['updated']}",
+                    "summary_rows": [
+                        {"label": "Value", "value": fact["value"] or "(no value)"},
+                        {"label": "Confidence", "value": f"{fact['confidence']:.2f}"},
+                        {"label": "Mentions", "value": fact["mentions"]},
+                    ],
+                    "popup_fields": [
+                        {"key": "doc_key", "label": "Doc", "type": "hidden", "value": row["doc_key"]},
+                        {"key": "fact_key", "label": "Fact", "type": "hidden", "value": fact["key"]},
+                        {
+                            "key": "new_value",
+                            "label": "Value",
+                            "type": "textarea",
+                            "value": raw_value,
+                            "description": (
+                                "Pre-filled with the current value"
+                                + (
+                                    f" (long value truncated to {value_cap} chars — re-enter the full text to keep it)"
+                                    if len(raw_value) >= value_cap
+                                    else ""
+                                )
+                                + ". Saving marks the source as 'manual' and keeps the previous value."
+                            ),
+                        },
+                        {
+                            "key": "confidence",
+                            "label": "Confidence",
+                            "type": "number",
+                            "value": fact["confidence"],
+                            "min": 0.0,
+                            "max": 1.0,
+                        },
+                    ],
+                    "settings_label": "Edit",
+                    "settings_title": f"Edit fact: {fact['key']} ({row['label']})",
+                    "save_action": "memory_manage_fact",
+                    "save_label": "Save",
+                    "save_success_text": "Fact updated.",
+                    "show_save_button": False,
+                    "remove_action": "memory_manage_fact_delete",
+                    "remove_label": "Delete",
+                    "remove_confirm": f"Delete fact '{fact['key']}' from {row['label']}? This cannot be undone.",
+                }
+            )
     forms.extend(habits_forms)
+    forms.extend(fact_items)
     return {
         "summary": "Advanced Memory: corrected facts, episodes, recall testing, and maintenance in this core's own namespace.",
         "stats": [
@@ -6362,6 +6473,14 @@ def get_htmlui_tab_data(*, redis_client=None, **_kwargs) -> Dict[str, Any]:
                     "selector": True,
                     "selector_label": "Select Person",
                     "empty_message": "No person documents yet.",
+                },
+                {
+                    "key": "facts",
+                    "label": "Facts",
+                    "source": "items",
+                    "item_group": "fact",
+                    "page_size": 10,
+                    "empty_message": "No facts stored yet — facts appear after conversations are processed.",
                 },
                 {
                     "key": "rooms",
